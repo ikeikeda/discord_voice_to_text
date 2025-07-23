@@ -44,6 +44,9 @@ voice_recorder = VoiceRecorder(recording_dir)
 transcriber = Transcriber()
 minutes_generator = MinutesGenerator()
 
+# 録音状態管理
+recording_status = {}
+
 @bot.event
 async def on_ready():
     logger.info(f'{bot.user} がログインしました')
@@ -70,7 +73,8 @@ async def start_recording(ctx):
         return
     
     # 既に録音中かチェック
-    if ctx.voice_client and ctx.voice_client.is_recording():
+    guild_id = ctx.guild.id
+    if recording_status.get(guild_id, False):
         await ctx.send('既に録音中です。`!stop`で停止してから新しい録音を開始してください。')
         return
     
@@ -84,6 +88,7 @@ async def start_recording(ctx):
             vc = await channel.connect()
         
         await voice_recorder.start_recording(ctx.voice_client)
+        recording_status[guild_id] = True  # 録音状態を記録
         await ctx.send(f'🎙️ {channel.name}で録音を開始しました。\n`!stop`で録音を停止できます。')
         logger.info(f'録音開始: {channel.name} (ユーザー: {ctx.author.display_name})')
         
@@ -92,6 +97,7 @@ async def start_recording(ctx):
         await ctx.send('ボイスチャンネルへの接続に失敗しました。Bot に適切な権限があることを確認してください。')
     except Exception as e:
         logger.error(f'録音開始エラー: {e}')
+        recording_status[guild_id] = False  # エラー時は録音状態をリセット
         await ctx.send('録音の開始に失敗しました。もう一度お試しください。')
         # ボイス接続をクリーンアップ
         if ctx.voice_client:
@@ -103,11 +109,13 @@ async def start_recording(ctx):
 @bot.command(name='stop')
 async def stop_recording(ctx):
     """音声録音を停止して文字起こし開始"""
+    guild_id = ctx.guild.id
+    
     if not ctx.voice_client:
         await ctx.send('現在録音していません。`!record`で録音を開始してください。')
         return
         
-    if not ctx.voice_client.is_recording():
+    if not recording_status.get(guild_id, False):
         await ctx.send('録音が開始されていません。`!record`で録音を開始してください。')
         return
     
@@ -116,6 +124,7 @@ async def stop_recording(ctx):
     try:
         # 録音停止
         audio_file = await voice_recorder.stop_recording(ctx.voice_client)
+        recording_status[guild_id] = False  # 録音状態をリセット
         await ctx.voice_client.disconnect()
         
         await processing_msg.edit(content='🎵 音声ファイルを処理中...')
@@ -159,6 +168,7 @@ async def stop_recording(ctx):
         await processing_msg.edit(content='❌ 処理がタイムアウトしました。もう一度お試しください。')
         logger.error('処理タイムアウト')
     except Exception as e:
+        recording_status[guild_id] = False  # エラー時も録音状態をリセット
         await processing_msg.edit(content='❌ 処理中にエラーが発生しました。')
         logger.error(f'処理エラー: {e}', exc_info=True)
     finally:
@@ -225,8 +235,9 @@ async def status_command(ctx):
     embed.add_field(name="議事録生成 API", value=minutes_status, inline=True)
     
     # 録音状態
-    recording_status = "🎙️ 録音中" if (ctx.voice_client and ctx.voice_client.is_recording()) else "⏹️ 停止中"
-    embed.add_field(name="録音状態", value=recording_status, inline=True)
+    guild_id = ctx.guild.id
+    current_recording_status = "🎙️ 録音中" if recording_status.get(guild_id, False) else "⏹️ 停止中"
+    embed.add_field(name="録音状態", value=current_recording_status, inline=True)
     
     # サーバー情報
     embed.add_field(name="接続サーバー数", value=f"{len(bot.guilds)}", inline=True)
@@ -259,6 +270,8 @@ async def on_voice_state_update(member, before, after):
         # Bot 以外のメンバーが残っているかチェック
         human_members = [m for m in voice_client.channel.members if not m.bot]
         if len(human_members) == 0:
+            guild_id = member.guild.id
+            recording_status[guild_id] = False  # チャンネルが空になったら録音状態をリセット
             logger.info(f'チャンネルが空になったため自動切断: {voice_client.channel.name}')
             await voice_client.disconnect()
 
