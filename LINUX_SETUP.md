@@ -149,7 +149,6 @@ python3 --version
 ```bash
 # uv のインストール
 curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.cargo/env
 
 # 確認
 uv --version
@@ -214,8 +213,8 @@ After=network.target
 Type=simple
 User=YOUR_USERNAME
 WorkingDirectory=/opt/discord_voice_to_text
-Environment=PATH=/home/YOUR_USERNAME/.cargo/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/YOUR_USERNAME/.cargo/bin/uv run python main.py
+Environment=PATH=/home/YOUR_USERNAME/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/YOUR_USERNAME/.local/bin/uv run python main.py
 Restart=always
 RestartSec=10
 
