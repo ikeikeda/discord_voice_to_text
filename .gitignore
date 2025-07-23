@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Discord Voice to Text specific
+*.wav
+*.mp3
+*.ogg
+*.webm
+audio_files/
+recordings/

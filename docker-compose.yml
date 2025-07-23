@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  discord-voice-to-text:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: discord-voice-to-text-bot
+    restart: unless-stopped
+    environment:
+      # Discord設定
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      
+      # OpenAI設定
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      
+      # オプション設定
+      - GUILD_ID=${GUILD_ID:-}
+      - RECORDING_OUTPUT_DIR=${RECORDING_OUTPUT_DIR:-recordings}
+      - MAX_RECORDING_AGE_DAYS=${MAX_RECORDING_AGE_DAYS:-7}
+      
+      # ログ設定
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE=${LOG_FILE:-bot.log}
+      
+      # Docker特有設定
+      - PYTHONUNBUFFERED=1
+    
+    volumes:
+      # 録音ファイルの永続化
+      - ./data/recordings:/app/recordings
+      # ログファイルの永続化
+      - ./data/logs:/app/logs
+      # 設定ファイルのマウント（オプション）
+      - ./.env:/app/.env:ro
+    
+    # ヘルスチェック
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    # ログ設定
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
