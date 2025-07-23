@@ -167,7 +167,7 @@ async def stop_recording(ctx):
             except:
                 pass
 
-@bot.command(name='help')
+@bot.command(name='bothelp')
 async def help_command(ctx):
     """ヘルプ表示"""
     embed = discord.Embed(
@@ -181,7 +181,7 @@ async def help_command(ctx):
         value="""
         🎬 `!record` - 音声録音を開始
         ⏹️ `!stop` - 録音停止・文字起こし・議事録生成
-        ❓ `!help` - このヘルプを表示
+        ❓ `!bothelp` - このヘルプを表示
         🔧 `!status` - Bot の状態を確認
         """,
         inline=False
