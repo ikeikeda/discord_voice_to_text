@@ -107,8 +107,8 @@ DISCORD_TOKEN=your_discord_bot_token_here
 # OpenAI API設定
 OPENAI_API_KEY=your_openai_api_key_here
 
-# Discord サーバー設定（オプション）
-GUILD_ID=your_discord_server_id_here
+# Discord サーバー設定（オプション - 現在未使用）
+# GUILD_ID=your_discord_server_id_here
 
 # 録音設定
 RECORDING_OUTPUT_DIR=recordings

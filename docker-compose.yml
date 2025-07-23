@@ -14,8 +14,8 @@ services:
       # OpenAI設定
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       
-      # オプション設定
-      - GUILD_ID=${GUILD_ID:-}
+      # オプション設定（現在未使用）
+      # - GUILD_ID=${GUILD_ID:-}
       - RECORDING_OUTPUT_DIR=${RECORDING_OUTPUT_DIR:-recordings}
       - MAX_RECORDING_AGE_DAYS=${MAX_RECORDING_AGE_DAYS:-7}
       
