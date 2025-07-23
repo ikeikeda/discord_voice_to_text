@@ -34,9 +34,7 @@ class VoiceRecorder:
     async def stop_recording(self, voice_client: discord.VoiceClient) -> str:
         """音声録音を停止してファイルを保存"""
         try:
-            if not voice_client.is_recording():
-                raise ValueError("現在録音していません")
-            
+            # py-cordではis_recording()が存在しないため、録音状態チェックは呼び出し側で行う
             voice_client.stop_recording()
             
             # 録音データが処理されるまで少し待つ

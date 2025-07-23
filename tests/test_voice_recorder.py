@@ -92,7 +92,6 @@ class TestVoiceRecorder:
     @pytest.mark.asyncio
     async def test_stop_recording_success(self, voice_recorder, mock_voice_client, mock_sink):
         """録音停止成功ケース"""
-        mock_voice_client.is_recording.return_value = True
         voice_recorder.sink = mock_sink
         
         with patch.object(voice_recorder, '_merge_audio_files', 
@@ -106,11 +105,11 @@ class TestVoiceRecorder:
             mock_merge.assert_called_once()
     
     @pytest.mark.asyncio
-    async def test_stop_recording_not_recording(self, voice_recorder, mock_voice_client):
-        """録音していない状態での停止"""
-        mock_voice_client.is_recording.return_value = False
+    async def test_stop_recording_exception(self, voice_recorder, mock_voice_client):
+        """録音停止時の例外処理"""
+        mock_voice_client.stop_recording.side_effect = Exception("停止エラー")
         
-        with pytest.raises(ValueError, match="現在録音していません"):
+        with pytest.raises(Exception, match="停止エラー"):
             await voice_recorder.stop_recording(mock_voice_client)
     
     @pytest.mark.asyncio
