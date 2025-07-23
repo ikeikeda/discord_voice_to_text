@@ -16,15 +16,22 @@ class VoiceRecorder:
         self.output_dir.mkdir(exist_ok=True)
         self.sink = None
         self.recording_task = None
+        self.recording_finished = False
         
     async def start_recording(self, voice_client: discord.VoiceClient) -> None:
         """音声録音を開始"""
         try:
             self.sink = discord.sinks.WaveSink()
+            self.recording_finished = False
+            
+            # 全てのチャンネルメンバーを録音対象に
+            members = voice_client.channel.members
+            logger.info(f"録音対象メンバー数: {len(members)}")
+            
             voice_client.start_recording(
                 self.sink,
                 self._finished_callback,
-                *voice_client.channel.members
+                *members
             )
             logger.info("音声録音を開始しました")
         except Exception as e:
@@ -37,7 +44,16 @@ class VoiceRecorder:
             # py-cordではis_recording()が存在しないため、録音状態チェックは呼び出し側で行う
             voice_client.stop_recording()
             
-            # 録音データが処理されるまで少し待つ
+            # 録音完了コールバックを待機（最大10秒）
+            wait_time = 0
+            while not self.recording_finished and wait_time < 10:
+                await asyncio.sleep(0.5)
+                wait_time += 0.5
+            
+            if not self.recording_finished:
+                logger.warning("録音完了コールバックがタイムアウトしました")
+            
+            # 追加の待機時間でデータが確実に書き込まれるまで待つ
             await asyncio.sleep(1)
             
             # 録音ファイルを結合して保存
@@ -51,12 +67,19 @@ class VoiceRecorder:
     
     async def _finished_callback(self, sink: discord.sinks.Sink, channel: discord.abc.Connectable, *args):
         """録音完了時のコールバック"""
-        logger.debug("録音コールバックが呼ばれました")
+        logger.info("録音完了コールバックが呼ばれました")
+        logger.info(f"録音データ数: {len(sink.audio_data) if sink.audio_data else 0}")
+        self.recording_finished = True
     
     async def _merge_audio_files(self) -> str:
         """複数の音声ファイルを結合して1つのファイルにする"""
-        if not self.sink or not self.sink.audio_data:
-            raise ValueError("録音データが見つかりません")
+        if not self.sink:
+            raise ValueError("録音Sinkが見つかりません")
+        
+        if not self.sink.audio_data:
+            logger.warning("録音データが空です")
+            # 空のファイルを作成する代わりに、エラーを投げる
+            raise ValueError("録音データが見つかりません - マイクが有効か確認してください")
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = self.output_dir / f"recording_{timestamp}.wav"
@@ -65,10 +88,22 @@ class VoiceRecorder:
             # 最初のユーザーの音声データを基準にする
             combined_audio = None
             
+            logger.info(f"処理する音声データ: {len(self.sink.audio_data)} ユーザー")
+            
             for user_id, audio_data in self.sink.audio_data.items():
+                # バイナリデータのサイズをログ出力
+                data_size = len(audio_data.file.getvalue())
+                logger.info(f"ユーザー {user_id} の音声データサイズ: {data_size} バイト")
+                
+                if data_size == 0:
+                    logger.warning(f"ユーザー {user_id} の音声データが空です")
+                    continue
+                
                 # バイナリデータからAudioSegmentを作成
                 audio_io = io.BytesIO(audio_data.file.getvalue())
                 audio_segment = AudioSegment.from_file(audio_io, format="wav")
+                
+                logger.info(f"AudioSegment 長さ: {len(audio_segment)}ms")
                 
                 if combined_audio is None:
                     combined_audio = audio_segment
