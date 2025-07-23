@@ -7,7 +7,7 @@ Linux サーバーに Discord Voice-to-Text Bot をインストール・運用�
 - Linux サーバー（Ubuntu 20.04+ / CentOS 8+ / Debian 11+ 推奨）
 - root または sudo 権限
 - インターネット接続
-- Discord Bot Token
+- Discord Bot Token（特権インテント有効化済み）
 - OpenAI API Key
 
 ## 🛠️ システム要件
@@ -347,7 +347,17 @@ chmod 755 /opt/discord_voice_to_text/deploy.sh
 
 ### よくある問題と解決方法
 
-**1. Docker が起動しない**
+**1. 特権インテントエラー**
+```
+PrivilegedIntentsRequired: ... privileged intents that have not been explicitly enabled
+```
+- Discord Developer Portal → あなたのBot → Bot セクション
+- 「Privileged Gateway Intents」で以下を有効化：
+  - ✅ `MESSAGE CONTENT INTENT`
+  - ✅ `SERVER MEMBERS INTENT`（推奨）
+- 「Save Changes」をクリック
+
+**2. Docker が起動しない**
 ```bash
 sudo systemctl status docker
 sudo systemctl start docker

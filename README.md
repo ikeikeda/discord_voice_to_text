@@ -68,8 +68,11 @@ LOG_FILE=bot.log
 
 1. [Discord Developer Portal](https://discord.com/developers/applications) にアクセス
 2. 新しいアプリケーションを作成
-3. Bot セクションでトークンを取得
-4. Bot に以下の権限を付与：
+3. **Bot セクション**でトークンを取得
+4. **重要: Privileged Gateway Intents を有効化**
+   - ✅ `MESSAGE CONTENT INTENT` - メッセージ内容の読み取り
+   - ✅ `SERVER MEMBERS INTENT` - サーバーメンバー情報（推奨）
+5. Bot に以下の権限を付与：
    - `Send Messages`
    - `Connect`
    - `Speak` 

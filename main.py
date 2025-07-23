@@ -27,9 +27,11 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Discord Intents設定
 intents = discord.Intents.default()
-intents.message_content = True
-intents.voice_states = True
+intents.message_content = True    # MESSAGE CONTENT INTENT (特権インテント)
+intents.voice_states = True       # 音声状態の監視用
+intents.guilds = True            # サーバー情報の取得
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
