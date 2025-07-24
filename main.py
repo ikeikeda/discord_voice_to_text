@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from src.voice_recorder import VoiceRecorder
 from src.transcriber import Transcriber
 from src.minutes_generator import MinutesGenerator
+from src.llm_providers import create_llm_provider
 
 load_dotenv()
 
@@ -39,10 +40,13 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 recording_dir = os.getenv('RECORDING_OUTPUT_DIR', 'recordings')
 max_age_days = int(os.getenv('MAX_RECORDING_AGE_DAYS', '7'))
 
+# LLMプロバイダーを初期化
+llm_provider = create_llm_provider()
+
 # インスタンス初期化
 voice_recorder = VoiceRecorder(recording_dir)
-transcriber = Transcriber()
-minutes_generator = MinutesGenerator()
+transcriber = Transcriber(llm_provider)
+minutes_generator = MinutesGenerator(llm_provider)
 
 # 録音状態管理
 recording_status = {}
@@ -54,9 +58,11 @@ async def on_ready():
     
     # API キーの検証
     if not transcriber.validate_api_key():
-        logger.error('OpenAI APIキーが無効です')
+        logger.error(f'{transcriber.provider_name} APIキーが無効です')
     if not minutes_generator.validate_api_key():
-        logger.error('議事録生成用のOpenAI APIキーが無効です')
+        logger.error(f'議事録生成用の{minutes_generator.provider_name} APIキーが無効です')
+    
+    logger.info(f'使用中のLLMプロバイダー: {llm_provider.provider_name}')
     
     # 古い録音ファイルをクリーンアップ
     try:
@@ -216,7 +222,7 @@ async def help_command(ctx):
         inline=False
     )
     
-    embed.set_footer(text="Discord Voice-to-Text Bot | Powered by OpenAI")
+    embed.set_footer(text=f"Discord Voice-to-Text Bot | Powered by {llm_provider.provider_name}")
     await ctx.send(embed=embed)
 
 @bot.command(name='status')
@@ -231,8 +237,9 @@ async def status_command(ctx):
     transcriber_status = "✅ 正常" if transcriber.validate_api_key() else "❌ エラー"
     minutes_status = "✅ 正常" if minutes_generator.validate_api_key() else "❌ エラー"
     
-    embed.add_field(name="文字起こし API", value=transcriber_status, inline=True)
-    embed.add_field(name="議事録生成 API", value=minutes_status, inline=True)
+    embed.add_field(name=f"文字起こし ({transcriber.provider_name})", value=transcriber_status, inline=True)
+    embed.add_field(name=f"議事録生成 ({minutes_generator.provider_name})", value=minutes_status, inline=True)
+    embed.add_field(name="LLMプロバイダー", value=llm_provider.provider_name, inline=True)
     
     # 録音状態
     guild_id = ctx.guild.id
@@ -282,10 +289,18 @@ if __name__ == '__main__':
         logger.error('DISCORD_TOKENが設定されていません。.envファイルを確認してください。')
         sys.exit(1)
     
-    openai_key = os.getenv('OPENAI_API_KEY')
-    if not openai_key:
-        logger.error('OPENAI_API_KEYが設定されていません。.envファイルを確認してください。')
-        sys.exit(1)
+    # LLMプロバイダーに応じてAPIキーをチェック
+    llm_provider_name = os.getenv('LLM_PROVIDER', 'openai').lower()
+    if llm_provider_name == 'openai':
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if not openai_key:
+            logger.error('OPENAI_API_KEYが設定されていません。.envファイルを確認してください。')
+            sys.exit(1)
+    elif llm_provider_name == 'gemini':
+        gemini_key = os.getenv('GEMINI_API_KEY')
+        if not gemini_key:
+            logger.error('GEMINI_API_KEYが設定されていません。.envファイルを確認してください。')
+            sys.exit(1)
     
     logger.info('Discord Voice-to-Text Bot を起動しています...')
     

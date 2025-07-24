@@ -1,12 +1,13 @@
 # 🎙️ Discord Voice-to-Text Bot
 
-Discord の音声データを自動で文字起こしし、AI により議事録を生成する Bot です。
+Discord の音声データを自動で文字起こしし、AI により議事録を生成する Bot です。複数のLLMプロバイダー（OpenAI、Gemini）をサポートしています。
 
 ## ✨ 機能
 
 - 🎵 **Discord 音声録音**: ボイスチャンネルでの会話を高品質で録音
 - 📝 **AI 文字起こし**: OpenAI Whisper API による正確な文字起こし
-- 📋 **議事録自動生成**: GPT-3.5 による構造化された議事録作成
+- 📋 **議事録自動生成**: OpenAI GPT または Google Gemini による構造化された議事録作成
+- 🔄 **LLM プロバイダー選択**: OpenAI と Gemini の切り替え可能
 - 🔄 **リアルタイム処理**: 録音停止後すぐに文字起こし・議事録生成
 - 🧹 **自動クリーンアップ**: 古い録音ファイルの自動削除
 - ⚠️ **エラーハンドリング**: 堅牢なエラー処理とロギング機能
@@ -18,7 +19,7 @@ Discord の音声データを自動で文字起こしし、AI により議事録
 - Python 3.9+
 - [uv](https://github.com/astral-sh/uv) パッケージマネージャー
 - Discord Bot Token
-- OpenAI API Key
+- OpenAI API Key または Gemini API Key
 - FFmpeg（音声処理用）
 
 ### 2. インストール
@@ -49,8 +50,10 @@ cp .env.example .env
 # Discord Bot設定
 DISCORD_TOKEN=your_discord_bot_token_here
 
-# OpenAI API設定  
+# LLM設定
+LLM_PROVIDER=openai  # openai または gemini
 OPENAI_API_KEY=your_openai_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 
 # Discord サーバー設定（オプション - 現在未使用）
 # GUILD_ID=your_discord_server_id_here
@@ -168,7 +171,8 @@ discord_voice_to_text/
 │   ├── __init__.py
 │   ├── voice_recorder.py      # 音声録音機能
 │   ├── transcriber.py         # 文字起こし機能  
-│   └── minutes_generator.py   # 議事録生成機能
+│   ├── minutes_generator.py   # 議事録生成機能
+│   └── llm_providers.py       # LLMプロバイダー抽象化
 ├── tests/
 │   ├── test_voice_recorder.py
 │   ├── test_transcriber.py
@@ -186,7 +190,9 @@ discord_voice_to_text/
 | 変数名 | 説明 | デフォルト |
 |-------|------|----------|
 | `DISCORD_TOKEN` | Discord Bot トークン | - |
+| `LLM_PROVIDER` | 使用するLLMプロバイダー | `openai` |
 | `OPENAI_API_KEY` | OpenAI API キー | - |
+| `GEMINI_API_KEY` | Gemini API キー | - |
 | `RECORDING_OUTPUT_DIR` | 録音ファイル保存先 | `recordings` |
 | `MAX_RECORDING_AGE_DAYS` | 録音ファイル保持日数 | `7` |
 | `LOG_LEVEL` | ログレベル | `INFO` |
@@ -206,7 +212,8 @@ discord_voice_to_text/
 
 ## ⚠️ 注意事項
 
-- OpenAI API の使用には料金が発生します
+- OpenAI API や Gemini API の使用には料金が発生します
+- Gemini では現在音声転写がサポートされていません（OpenAI Whisperを使用）
 - 長時間の録音は処理時間が長くなる場合があります
 - 録音ファイルは設定された日数後に自動削除されます
 - Bot には適切な Discord 権限が必要です
@@ -220,8 +227,9 @@ discord_voice_to_text/
 - サーバーの権限設定を確認
 
 **文字起こしでエラーが発生する**
-- OpenAI API キーが正しく設定されていることを確認  
+- 選択したLLMプロバイダーのAPI キーが正しく設定されていることを確認  
 - API の使用制限に達していないか確認
+- Gemini を使用する場合は、音声転写にOpenAI Whisperが必要です
 
 **音声ファイルが空**
 - マイクの権限設定を確認

@@ -4,12 +4,14 @@ from unittest.mock import Mock, patch, AsyncMock
 import os
 
 from src.minutes_generator import MinutesGenerator
+from src.llm_providers import OpenAIProvider
 
 
 @pytest.fixture
 def minutes_generator():
     """テスト用のMinutesGeneratorインスタンス"""
-    return MinutesGenerator(api_key="test_key_1234567890")
+    provider = OpenAIProvider(api_key="test_key_1234567890")
+    return MinutesGenerator(provider=provider)
 
 
 @pytest.fixture
@@ -26,16 +28,16 @@ def sample_transcription():
 
 
 class TestMinutesGenerator:
-    def test_init_with_api_key(self):
-        """APIキーを指定してのインスタンス作成"""
-        generator = MinutesGenerator(api_key="test_key")
-        assert generator.client.api_key == "test_key"
+    def test_init_with_provider(self):
+        """プロバイダーを指定してのインスタンス作成"""
+        provider = OpenAIProvider(api_key="test_key")
+        generator = MinutesGenerator(provider=provider)
+        assert generator.provider.api_key == "test_key"
     
     def test_init_without_api_key_raises_error(self):
         """APIキーなしでのインスタンス作成はエラー"""
-        from openai import OpenAIError
         with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(OpenAIError):
+            with pytest.raises(ValueError):
                 MinutesGenerator()
     
     def test_validate_api_key(self, minutes_generator):
@@ -43,7 +45,7 @@ class TestMinutesGenerator:
         assert minutes_generator.validate_api_key() is True
         
         # 短いキーの場合
-        minutes_generator.client.api_key = "short"
+        minutes_generator.provider.api_key = "short"
         assert minutes_generator.validate_api_key() is False
     
     @pytest.mark.asyncio
@@ -53,14 +55,14 @@ class TestMinutesGenerator:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "生成された議事録の内容です。"
         
-        with patch.object(minutes_generator.client.chat.completions, 'create',
-                         new_callable=AsyncMock) as mock_create:
-            mock_create.return_value = mock_response
+        with patch.object(minutes_generator.provider, 'generate_chat_completion',
+                         new_callable=AsyncMock) as mock_generate:
+            mock_generate.return_value = "生成された議事録の内容です。"
             
             result = await minutes_generator.generate(sample_transcription)
             
             assert result == "生成された議事録の内容です。"
-            mock_create.assert_called_once()
+            mock_generate.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_generate_empty_transcription(self, minutes_generator):
@@ -76,9 +78,9 @@ class TestMinutesGenerator:
         """OpenAI APIエラー"""
         from openai import OpenAIError
         
-        with patch.object(minutes_generator.client.chat.completions, 'create',
-                         new_callable=AsyncMock) as mock_create:
-            mock_create.side_effect = OpenAIError("API Error")
+        with patch.object(minutes_generator.provider, 'generate_chat_completion',
+                         new_callable=AsyncMock) as mock_generate:
+            mock_generate.return_value = "議事録生成でAPIエラーが発生しました: API Error"
             
             result = await minutes_generator.generate(sample_transcription)
             
@@ -95,15 +97,12 @@ class TestMinutesGenerator:
             "• 来週の計画を立てることに決定"  # decisions
         ]
         
-        async def mock_create_side_effect(*args, **kwargs):
-            mock_response = Mock()
-            mock_response.choices = [Mock()]
-            mock_response.choices[0].message.content = mock_responses.pop(0)
-            return mock_response
+        async def mock_generate_side_effect(*args, **kwargs):
+            return mock_responses.pop(0)
         
-        with patch.object(minutes_generator.client.chat.completions, 'create',
-                         new_callable=AsyncMock) as mock_create:
-            mock_create.side_effect = mock_create_side_effect
+        with patch.object(minutes_generator.provider, 'generate_chat_completion',
+                         new_callable=AsyncMock) as mock_generate:
+            mock_generate.side_effect = mock_generate_side_effect
             
             result = await minutes_generator.generate_detailed(sample_transcription)
             
@@ -163,9 +162,9 @@ class TestMinutesGenerator:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = ""
         
-        with patch.object(minutes_generator.client.chat.completions, 'create',
-                         new_callable=AsyncMock) as mock_create:
-            mock_create.return_value = mock_response
+        with patch.object(minutes_generator.provider, 'generate_chat_completion',
+                         new_callable=AsyncMock) as mock_generate:
+            mock_generate.return_value = ""
             
             result = await minutes_generator.generate(sample_transcription)
             

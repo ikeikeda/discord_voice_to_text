@@ -8,7 +8,7 @@ Linux サーバーに Discord Voice-to-Text Bot をインストール・運用�
 - root または sudo 権限
 - インターネット接続
 - Discord Bot Token（特権インテント有効化済み）
-- OpenAI API Key
+- OpenAI API Key または Gemini API Key
 
 ## 🛠️ システム要件
 
@@ -104,8 +104,10 @@ nano .env
 # Discord Bot設定
 DISCORD_TOKEN=your_discord_bot_token_here
 
-# OpenAI API設定
+# LLM設定
+LLM_PROVIDER=openai  # openai または gemini
 OPENAI_API_KEY=your_openai_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 
 # Discord サーバー設定（オプション - 現在未使用）
 # GUILD_ID=your_discord_server_id_here
@@ -397,6 +399,35 @@ groups $USER
 # 再ログインまたは
 newgrp docker
 ```
+
+**6. LLM API エラー**
+```bash
+# 使用中のプロバイダーを確認
+grep LLM_PROVIDER /opt/discord_voice_to_text/.env
+
+# OpenAI の場合
+grep OPENAI_API_KEY /opt/discord_voice_to_text/.env
+
+# Gemini の場合  
+grep GEMINI_API_KEY /opt/discord_voice_to_text/.env
+
+# API キーの形式確認
+# OpenAI: sk-proj-... または sk-...
+# Gemini: AIza...
+```
+
+**7. Gemini で音声転写エラー**
+- Gemini は現在音声転写をサポートしていません
+- 音声転写には OpenAI Whisper が必要です
+- 混在設定の場合：
+  ```env
+  # 音声転写用（必須）
+  OPENAI_API_KEY=your_openai_key
+  
+  # 議事録生成用（Gemini使用）
+  LLM_PROVIDER=gemini  
+  GEMINI_API_KEY=your_gemini_key
+  ```
 
 ### ログの確認方法
 

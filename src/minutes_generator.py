@@ -3,55 +3,37 @@ import logging
 import os
 from datetime import datetime
 from typing import Optional, Dict, List
-import openai
-from openai import AsyncOpenAI
+from .llm_providers import create_llm_provider, LLMProvider
 
 logger = logging.getLogger(__name__)
 
 
 class MinutesGenerator:
-    def __init__(self, api_key: Optional[str] = None):
-        self.client = AsyncOpenAI(
-            api_key=api_key or os.getenv('OPENAI_API_KEY')
-        )
-        if not self.client.api_key:
-            raise ValueError("OpenAI APIキーが設定されていません")
+    def __init__(self, provider: Optional[LLMProvider] = None):
+        self.provider = provider or create_llm_provider()
     
     async def generate(self, transcription: str, meeting_title: str = "Discord会議") -> str:
         """文字起こしから議事録を生成"""
-        try:
-            if not transcription or transcription.strip() == "":
-                return "文字起こしデータが空のため、議事録を生成できませんでした。"
-            
-            logger.info("議事録を生成しています...")
-            
-            prompt = self._create_minutes_prompt(transcription, meeting_title)
-            
-            response = await self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "あなたは優秀な議事録作成アシスタントです。"},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=2000,
-                temperature=0.3
-            )
-            
-            minutes = response.choices[0].message.content.strip()
-            
-            if not minutes:
-                logger.warning("議事録生成結果が空でした")
-                return "議事録の生成に失敗しました。"
-            
-            logger.info(f"議事録生成完了。文字数: {len(minutes)}")
-            return minutes
-            
-        except openai.OpenAIError as e:
-            logger.error(f"OpenAI API エラー: {e}")
-            return f"議事録生成でAPIエラーが発生しました: {str(e)}"
-        except Exception as e:
-            logger.error(f"議事録生成エラー: {e}")
-            return f"議事録生成中に予期しないエラーが発生しました: {str(e)}"
+        if not transcription or transcription.strip() == "":
+            return "文字起こしデータが空のため、議事録を生成できませんでした。"
+        
+        logger.info("議事録を生成しています...")
+        
+        prompt = self._create_minutes_prompt(transcription, meeting_title)
+        
+        messages = [
+            {"role": "system", "content": "あなたは優秀な議事録作成アシスタントです。"},
+            {"role": "user", "content": prompt}
+        ]
+        
+        result = await self.provider.generate_chat_completion(messages, max_tokens=2000, temperature=0.3)
+        
+        if not result or "エラー" in result:
+            logger.warning(f"議事録生成に問題が発生: {result}")
+            return result if result else "議事録の生成に失敗しました。"
+        
+        logger.info(f"議事録生成完了。文字数: {len(result)}")
+        return result
     
     async def generate_detailed(self, transcription: str, segments: List[Dict] = None, 
                               meeting_title: str = "Discord会議") -> Dict[str, str]:
@@ -129,16 +111,11 @@ class MinutesGenerator:
 
 要約:
 """
-        response = await self.client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "あなたは会議要約のエキスパートです。"},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=300,
-            temperature=0.2
-        )
-        return response.choices[0].message.content.strip()
+        messages = [
+            {"role": "system", "content": "あなたは会議要約のエキスパートです。"},
+            {"role": "user", "content": prompt}
+        ]
+        return await self.provider.generate_chat_completion(messages, max_tokens=300, temperature=0.2)
     
     async def _generate_action_items(self, transcription: str) -> str:
         """アクションアイテムを抽出"""
@@ -151,16 +128,11 @@ class MinutesGenerator:
 
 アクションアイテム:
 """
-        response = await self.client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "アクションアイテム抽出のエキスパートです。"},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=400,
-            temperature=0.1
-        )
-        return response.choices[0].message.content.strip()
+        messages = [
+            {"role": "system", "content": "アクションアイテム抽出のエキスパートです。"},
+            {"role": "user", "content": prompt}
+        ]
+        return await self.provider.generate_chat_completion(messages, max_tokens=400, temperature=0.1)
     
     async def _generate_key_points(self, transcription: str) -> str:
         """重要なポイントを抽出"""
@@ -172,16 +144,11 @@ class MinutesGenerator:
 
 重要ポイント:
 """
-        response = await self.client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "重要ポイント抽出のエキスパートです。"},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=400,
-            temperature=0.2
-        )
-        return response.choices[0].message.content.strip()
+        messages = [
+            {"role": "system", "content": "重要ポイント抽出のエキスパートです。"},
+            {"role": "user", "content": prompt}
+        ]
+        return await self.provider.generate_chat_completion(messages, max_tokens=400, temperature=0.2)
     
     async def _generate_decisions(self, transcription: str) -> str:
         """決定事項を抽出"""
@@ -194,16 +161,11 @@ class MinutesGenerator:
 
 決定事項:
 """
-        response = await self.client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "決定事項抽出のエキスパートです。"},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=400,
-            temperature=0.1
-        )
-        return response.choices[0].message.content.strip()
+        messages = [
+            {"role": "system", "content": "決定事項抽出のエキスパートです。"},
+            {"role": "user", "content": prompt}
+        ]
+        return await self.provider.generate_chat_completion(messages, max_tokens=400, temperature=0.1)
     
     def _format_detailed_minutes(self, title: str, summary: str, key_points: str, 
                                decisions: str, action_items: str) -> str:
@@ -243,7 +205,9 @@ class MinutesGenerator:
     
     def validate_api_key(self) -> bool:
         """APIキーの有効性をチェック"""
-        try:
-            return bool(self.client.api_key and len(self.client.api_key) > 10)
-        except Exception:
-            return False
+        return self.provider.validate_api_key()
+    
+    @property
+    def provider_name(self) -> str:
+        """現在のプロバイダー名を返す"""
+        return self.provider.provider_name
