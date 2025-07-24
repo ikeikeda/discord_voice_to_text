@@ -235,8 +235,23 @@ class GeminiProvider(LLMProvider):
             genai.configure(api_key=self.api_key)
             self.genai = genai
             
-            # モデルの初期化
-            self.text_model = genai.GenerativeModel('gemini-pro')
+            # モデルの初期化（複数のモデルを試行）
+            model_names = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+            self.text_model = None
+            self.model_name = None
+            
+            for model_name in model_names:
+                try:
+                    self.text_model = genai.GenerativeModel(model_name)
+                    self.model_name = model_name
+                    logger.info(f"Gemini モデルを初期化しました: {model_name}")
+                    break
+                except Exception as e:
+                    logger.warning(f"モデル {model_name} の初期化に失敗: {e}")
+                    continue
+            
+            if not self.text_model:
+                raise ValueError("利用可能なGeminiモデルが見つかりませんでした")
         except ImportError:
             raise ImportError("google-generativeai ライブラリがインストールされていません。pip install google-generativeai でインストールしてください。")
     
@@ -263,14 +278,17 @@ class GeminiProvider(LLMProvider):
         """テキスト生成"""
         try:
             # Gemini の設定
-            generation_config = self.genai.types.GenerationConfig(
-                max_output_tokens=max_tokens,
-                temperature=temperature,
-            )
+            generation_config = {
+                'max_output_tokens': max_tokens,
+                'temperature': temperature,
+            }
             
-            response = await self.text_model.generate_content_async(
-                prompt,
-                generation_config=generation_config
+            # 同期メソッドを非同期で実行
+            import asyncio
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None, 
+                lambda: self.text_model.generate_content(prompt, generation_config=generation_config)
             )
             
             if response.text:

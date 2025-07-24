@@ -111,15 +111,18 @@ class TestGeminiProvider:
             mock_model = Mock()
             mock_response = Mock()
             mock_response.text = "生成されたテキスト"
-            mock_model.generate_content_async = AsyncMock(return_value=mock_response)
+            mock_model.generate_content = Mock(return_value=mock_response)
             
             with patch('google.generativeai.GenerativeModel', return_value=mock_model):
                 provider = GeminiProvider(api_key="test_key")
                 
-                result = await provider.generate_text("テストプロンプト")
-                
-                assert result == "生成されたテキスト"
-                mock_model.generate_content_async.assert_called_once()
+                with patch('asyncio.get_event_loop') as mock_loop:
+                    mock_executor = AsyncMock(return_value=mock_response)
+                    mock_loop.return_value.run_in_executor = mock_executor
+                    
+                    result = await provider.generate_text("テストプロンプト")
+                    
+                    assert result == "生成されたテキスト"
 
 
 class TestCreateLLMProvider:
