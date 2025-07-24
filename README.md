@@ -213,7 +213,7 @@ discord_voice_to_text/
 ## ⚠️ 注意事項
 
 - OpenAI API や Gemini API の使用には料金が発生します
-- Gemini では現在音声転写がサポートされていません（OpenAI Whisperを使用）
+- 音声転写は常にOpenAI Whisperを使用（Geminiは音声転写未対応）、議事録生成のみプロバイダー選択可能
 - 長時間の録音は処理時間が長くなる場合があります
 - 録音ファイルは設定された日数後に自動削除されます
 - Bot には適切な Discord 権限が必要です
@@ -227,9 +227,16 @@ discord_voice_to_text/
 - サーバーの権限設定を確認
 
 **文字起こしでエラーが発生する**
-- 選択したLLMプロバイダーのAPI キーが正しく設定されていることを確認  
+- OPENAI_API_KEY が正しく設定されていることを確認（音声転写に必須）
+- 議事録生成でGeminiを使用する場合は GEMINI_API_KEY も設定
 - API の使用制限に達していないか確認
-- Gemini を使用する場合は、音声転写にOpenAI Whisperが必要です
+
+**推奨設定（Gemini で議事録生成）:**
+```env
+LLM_PROVIDER=gemini
+OPENAI_API_KEY=your_openai_key  # 音声転写用（必須）
+GEMINI_API_KEY=your_gemini_key  # 議事録生成用
+```
 
 **音声ファイルが空**
 - マイクの権限設定を確認
