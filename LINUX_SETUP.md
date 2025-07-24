@@ -391,6 +391,16 @@ sudo apt remove ffmpeg
 sudo apt install ffmpeg
 ```
 
+**8. 音声ファイルサイズ制限エラー（25MB超過）**
+- OpenAI Whisper APIの制限により25MBを超える音声ファイルは処理できません
+- Bot は自動的に音声圧縮を試行します（ビットレート64kbps、16kHzサンプリング）
+- 圧縮後も25MBを超える場合：
+  ```bash
+  # 録音時間を短くする（推奨：1時間以内）
+  # または手動で音声を圧縮
+  ffmpeg -i input.wav -acodec mp3 -ab 64k -ar 16000 -ac 1 output.mp3
+  ```
+
 **5. 権限エラー**
 ```bash
 # Docker グループに追加されているか確認

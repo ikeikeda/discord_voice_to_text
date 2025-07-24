@@ -76,7 +76,26 @@ class OpenAIProvider(LLMProvider):
             if not audio_file.exists():
                 raise FileNotFoundError(f"音声ファイルが見つかりません: {audio_file_path}")
             
-            logger.info(f"音声ファイルを文字起こししています: {audio_file_path}")
+            # ファイルサイズチェック（OpenAI Whisper API の制限: 25MB）
+            file_size = audio_file.stat().st_size
+            max_size = 25 * 1024 * 1024  # 25MB
+            
+            if file_size > max_size:
+                logger.warning(f"音声ファイルが大きすぎます: {file_size / (1024*1024):.2f}MB > 25MB")
+                # ファイル圧縮を試行
+                compressed_file = await self._compress_audio_file(audio_file_path)
+                if compressed_file:
+                    audio_file = Path(compressed_file)
+                    new_size = audio_file.stat().st_size
+                    logger.info(f"音声ファイルを圧縮しました: {new_size / (1024*1024):.2f}MB")
+                    
+                    # 圧縮後もまだ大きい場合
+                    if new_size > max_size:
+                        return f"音声ファイルが大きすぎます ({new_size / (1024*1024):.2f}MB > 25MB)。より短い録音にするか、音質を下げてください。"
+                else:
+                    return f"音声ファイルが大きすぎます ({file_size / (1024*1024):.2f}MB > 25MB)。より短い録音にするか、音質を下げてください。"
+            
+            logger.info(f"音声ファイルを文字起こししています: {audio_file_path} ({file_size / (1024*1024):.2f}MB)")
             
             with open(audio_file, "rb") as file:
                 transcription = await self.client.audio.transcriptions.create(
@@ -97,6 +116,15 @@ class OpenAIProvider(LLMProvider):
                 return "音声の文字起こしに失敗しました。"
             
             logger.info(f"文字起こし完了。文字数: {len(result)}")
+            
+            # 圧縮ファイルのクリーンアップ
+            if 'compressed_file' in locals() and compressed_file and compressed_file != audio_file_path:
+                try:
+                    Path(compressed_file).unlink()
+                    logger.debug(f"圧縮ファイルを削除しました: {compressed_file}")
+                except Exception:
+                    pass
+            
             return result
             
         except openai.OpenAIError as e:
@@ -108,6 +136,54 @@ class OpenAIProvider(LLMProvider):
         except Exception as e:
             logger.error(f"文字起こしエラー: {e}")
             return f"音声の文字起こし中に予期しないエラーが発生しました: {str(e)}"
+
+    async def _compress_audio_file(self, audio_file_path: str) -> str:
+        """音声ファイルを圧縮"""
+        try:
+            import tempfile
+            from pathlib import Path
+            
+            input_path = Path(audio_file_path)
+            
+            # 一時ファイル作成
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
+                output_path = temp_file.name
+            
+            # FFmpegで音声を圧縮（ビットレート下げる、サンプリングレート下げる）
+            cmd = [
+                'ffmpeg', '-i', str(input_path),
+                '-acodec', 'mp3',           # MP3形式
+                '-ab', '64k',               # ビットレート64kbps（元は通常128k+）
+                '-ar', '16000',             # サンプリングレート16kHz（元は通常44.1kHz）
+                '-ac', '1',                 # モノラル
+                '-y',                       # 上書き確認なし
+                output_path
+            ]
+            
+            logger.info("音声ファイルを圧縮中...")
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode == 0:
+                output_file = Path(output_path)
+                if output_file.exists() and output_file.stat().st_size > 0:
+                    logger.info(f"音声ファイル圧縮完了: {output_path}")
+                    return output_path
+                else:
+                    logger.error("圧縮ファイルが正常に作成されませんでした")
+                    return None
+            else:
+                logger.error(f"FFmpeg圧縮エラー: {stderr.decode()}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"音声圧縮エラー: {e}")
+            return None
     
     async def transcribe_with_timestamps(self, audio_file_path: str, language: str = "ja") -> dict:
         """タイムスタンプ付きで音声ファイルを文字起こし"""
@@ -119,7 +195,35 @@ class OpenAIProvider(LLMProvider):
             if not audio_file.exists():
                 raise FileNotFoundError(f"音声ファイルが見つかりません: {audio_file_path}")
             
-            logger.info(f"タイムスタンプ付き文字起こしを実行中: {audio_file_path}")
+            # ファイルサイズチェック
+            file_size = audio_file.stat().st_size
+            max_size = 25 * 1024 * 1024  # 25MB
+            
+            compressed_file = None
+            if file_size > max_size:
+                logger.warning(f"音声ファイルが大きすぎます: {file_size / (1024*1024):.2f}MB > 25MB")
+                compressed_file = await self._compress_audio_file(audio_file_path)
+                if compressed_file:
+                    audio_file = Path(compressed_file)
+                    new_size = audio_file.stat().st_size
+                    logger.info(f"音声ファイルを圧縮しました: {new_size / (1024*1024):.2f}MB")
+                    
+                    if new_size > max_size:
+                        return {
+                            "text": f"音声ファイルが大きすぎます ({new_size / (1024*1024):.2f}MB > 25MB)。より短い録音にするか、音質を下げてください。",
+                            "segments": [],
+                            "language": language,
+                            "duration": 0
+                        }
+                else:
+                    return {
+                        "text": f"音声ファイルが大きすぎます ({file_size / (1024*1024):.2f}MB > 25MB)。より短い録音にするか、音質を下げてください。",
+                        "segments": [],
+                        "language": language,
+                        "duration": 0
+                    }
+            
+            logger.info(f"タイムスタンプ付き文字起こしを実行中: {audio_file_path} ({file_size / (1024*1024):.2f}MB)")
             
             with open(audio_file, "rb") as file:
                 transcription = await self.client.audio.transcriptions.create(
@@ -132,6 +236,15 @@ class OpenAIProvider(LLMProvider):
                 )
             
             logger.info("タイムスタンプ付き文字起こし完了")
+            
+            # 圧縮ファイルのクリーンアップ
+            if compressed_file and compressed_file != audio_file_path:
+                try:
+                    Path(compressed_file).unlink()
+                    logger.debug(f"圧縮ファイルを削除しました: {compressed_file}")
+                except Exception:
+                    pass
+            
             return {
                 "text": transcription.text,
                 "segments": transcription.segments if hasattr(transcription, 'segments') else [],
