@@ -187,6 +187,87 @@ async def stop_recording(ctx):
             except:
                 pass
 
+@bot.command(name='both')
+async def stop_recording_both(ctx):
+    """音声録音を停止して文字起こしと議事録の両方を生成"""
+    guild_id = ctx.guild.id
+    
+    if not ctx.voice_client:
+        await ctx.send('現在録音していません。`!record`で録音を開始してください。')
+        return
+        
+    if not recording_status.get(guild_id, False):
+        await ctx.send('録音が開始されていません。`!record`で録音を開始してください。')
+        return
+    
+    processing_msg = await ctx.send('🛑 録音を停止中...')
+    
+    try:
+        # 録音停止
+        audio_file = await voice_recorder.stop_recording(ctx.voice_client)
+        recording_status[guild_id] = False  # 録音状態をリセット
+        await ctx.voice_client.disconnect()
+        
+        await processing_msg.edit(content='🎵 音声ファイルを処理中...')
+        
+        # ファイルサイズチェック
+        file_path = Path(audio_file)
+        if not file_path.exists() or file_path.stat().st_size == 0:
+            await processing_msg.edit(content='❌ 録音されたファイルが空または見つかりません。')
+            return
+        
+        file_size_mb = file_path.stat().st_size / (1024 * 1024)
+        logger.info(f'音声ファイルサイズ: {file_size_mb:.2f}MB')
+        
+        # 文字起こし
+        await processing_msg.edit(content='📝 音声を文字起こししています...')
+        transcription = await transcriber.transcribe(audio_file)
+        
+        if transcription.startswith('音声の文字起こしで'):
+            await processing_msg.edit(content=f'❌ 文字起こしに失敗しました: {transcription}')
+            return
+        
+        # 議事録生成
+        await processing_msg.edit(content='📄 議事録を生成しています...')
+        minutes = await minutes_generator.generate(transcription)
+        
+        # 文字起こし結果を送信
+        await processing_msg.edit(content='✅ 処理完了！文字起こし結果と議事録を送信します...')
+        
+        # 文字起こし結果の送信
+        if len(transcription) > 1900:
+            chunks = [transcription[i:i+1900] for i in range(0, len(transcription), 1900)]
+            for i, chunk in enumerate(chunks, 1):
+                await ctx.send(f'```\n文字起こし結果 ({i}/{len(chunks)})\n\n{chunk}\n```')
+        else:
+            await ctx.send(f'```\n文字起こし結果\n\n{transcription}\n```')
+        
+        # 議事録の送信
+        if len(minutes) > 1900:
+            chunks = [minutes[i:i+1900] for i in range(0, len(minutes), 1900)]
+            for i, chunk in enumerate(chunks, 1):
+                await ctx.send(f'```\n議事録 ({i}/{len(chunks)})\n\n{chunk}\n```')
+        else:
+            await ctx.send(f'```\n議事録\n\n{minutes}\n```')
+        
+        # ファイル情報をログに記録
+        logger.info(f'処理完了 - ファイル: {audio_file}, 文字数: {len(transcription)}, 議事録文字数: {len(minutes)}')
+        
+    except asyncio.TimeoutError:
+        await processing_msg.edit(content='❌ 処理がタイムアウトしました。もう一度お試しください。')
+        logger.error('処理タイムアウト')
+    except Exception as e:
+        recording_status[guild_id] = False  # エラー時も録音状態をリセット
+        await processing_msg.edit(content='❌ 処理中にエラーが発生しました。')
+        logger.error(f'処理エラー: {e}', exc_info=True)
+    finally:
+        # ボイス接続のクリーンアップ
+        if ctx.voice_client:
+            try:
+                await ctx.voice_client.disconnect()
+            except:
+                pass
+
 @bot.command(name='bothelp')
 async def help_command(ctx):
     """ヘルプ表示"""
@@ -200,7 +281,8 @@ async def help_command(ctx):
         name="📋 コマンド一覧",
         value="""
         🎬 `!record` - 音声録音を開始
-        ⏹️ `!stop` - 録音停止・文字起こし・議事録生成
+        ⏹️ `!stop` - 録音停止・議事録生成
+        📄 `!both` - 録音停止・文字起こしと議事録の両方を取得
         ❓ `!bothelp` - このヘルプを表示
         🔧 `!status` - Bot の状態を確認
         """,
@@ -213,7 +295,7 @@ async def help_command(ctx):
         1️⃣ ボイスチャンネルに参加
         2️⃣ `!record`で録音開始
         3️⃣ 会話を行う
-        4️⃣ `!stop`で録音停止・自動処理
+        4️⃣ `!stop`で議事録のみ または `!both`で文字起こし+議事録の両方
         """,
         inline=False
     )
