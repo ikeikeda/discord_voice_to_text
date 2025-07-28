@@ -1,48 +1,57 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, List
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 
 class LLMProvider(ABC):
     """LLMプロバイダーの基底クラス"""
-    
+
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
         self._validate_api_key()
-    
+
     @abstractmethod
     def _validate_api_key(self) -> None:
         """APIキーの検証"""
         pass
-    
+
     @abstractmethod
     async def transcribe(self, audio_file_path: str, language: str = "ja") -> str:
         """音声ファイルを文字起こし"""
         pass
-    
+
     @abstractmethod
-    async def transcribe_with_timestamps(self, audio_file_path: str, language: str = "ja") -> dict:
+    async def transcribe_with_timestamps(
+        self, audio_file_path: str, language: str = "ja"
+    ) -> dict:
         """タイムスタンプ付きで音声ファイルを文字起こし"""
         pass
-    
+
     @abstractmethod
-    async def generate_text(self, prompt: str, max_tokens: int = 2000, temperature: float = 0.3) -> str:
+    async def generate_text(
+        self, prompt: str, max_tokens: int = 2000, temperature: float = 0.3
+    ) -> str:
         """テキスト生成"""
         pass
-    
+
     @abstractmethod
-    async def generate_chat_completion(self, messages: List[Dict[str, str]], 
-                                     max_tokens: int = 2000, temperature: float = 0.3) -> str:
+    async def generate_chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: int = 2000,
+        temperature: float = 0.3,
+    ) -> str:
         """チャット形式でのテキスト生成"""
         pass
-    
+
     @abstractmethod
     def validate_api_key(self) -> bool:
         """APIキーの有効性をチェック"""
         pass
-    
+
     @property
     @abstractmethod
     def provider_name(self) -> str:
@@ -52,81 +61,117 @@ class LLMProvider(ABC):
 
 class OpenAIProvider(LLMProvider):
     """OpenAI APIプロバイダー"""
-    
+
     def __init__(self, api_key: Optional[str] = None):
         import os
         from openai import AsyncOpenAI
-        
-        self.client = AsyncOpenAI(
-            api_key=api_key or os.getenv('OPENAI_API_KEY')
-        )
+
+        self.client = AsyncOpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
         super().__init__(self.client.api_key)
-    
+
     def _validate_api_key(self) -> None:
         if not self.client.api_key:
             raise ValueError("OpenAI APIキーが設定されていません")
-    
+
     async def transcribe(self, audio_file_path: str, language: str = "ja") -> str:
         """音声ファイルを文字起こし"""
         try:
             from pathlib import Path
             import openai
-            
+
             audio_file = Path(audio_file_path)
             if not audio_file.exists():
-                raise FileNotFoundError(f"音声ファイルが見つかりません: {audio_file_path}")
-            
+                raise FileNotFoundError(
+                    f"音声ファイルが見つかりません: {audio_file_path}"
+                )
+
             # ファイルサイズチェック（OpenAI Whisper API の制限: 25MB）
             file_size = audio_file.stat().st_size
             max_size = 25 * 1024 * 1024  # 25MB
-            
+
             if file_size > max_size:
-                logger.warning(f"音声ファイルが大きすぎます: {file_size / (1024*1024):.2f}MB > 25MB")
+                logger.warning(
+                    f"音声ファイルが大きすぎます: {file_size / (1024*1024):.2f}MB > 25MB"
+                )
                 # ファイル圧縮を試行
                 compressed_file = await self._compress_audio_file(audio_file_path)
                 if compressed_file:
                     audio_file = Path(compressed_file)
                     new_size = audio_file.stat().st_size
-                    logger.info(f"音声ファイルを圧縮しました: {new_size / (1024*1024):.2f}MB")
-                    
-                    # 圧縮後もまだ大きい場合
+                    logger.info(
+                        f"音声ファイルを圧縮しました: {new_size / (1024*1024):.2f}MB"
+                    )
+
+                    # 圧縮後もまだ大きい場合は分割処理
                     if new_size > max_size:
-                        return f"音声ファイルが大きすぎます ({new_size / (1024*1024):.2f}MB > 25MB)。より短い録音にするか、音質を下げてください。"
+                        logger.info("圧縮後もサイズが大きいため、音声分割を実行します")
+                        # 圧縮ファイルを分割
+                        segments = await self._split_audio_file(
+                            compressed_file, target_size_mb=20
+                        )
+                        if segments:
+                            # 分割されたセグメントを文字起こし
+                            result = await self._transcribe_segments(segments, language)
+                            # 圧縮ファイルをクリーンアップ
+                            try:
+                                Path(compressed_file).unlink()
+                                logger.debug(
+                                    f"圧縮ファイルを削除しました: {compressed_file}"
+                                )
+                            except Exception as e:
+                                logger.warning(f"圧縮ファイル削除エラー: {e}")
+                            return result
+                        else:
+                            return f"音声ファイルが大きすぎます ({new_size / (1024*1024):.2f}MB > 25MB)。音声分割にも失敗しました。"
                 else:
-                    return f"音声ファイルが大きすぎます ({file_size / (1024*1024):.2f}MB > 25MB)。より短い録音にするか、音質を下げてください。"
-            
-            logger.info(f"音声ファイルを文字起こししています: {audio_file_path} ({file_size / (1024*1024):.2f}MB)")
-            
+                    # 圧縮に失敗した場合、元ファイルを直接分割
+                    logger.info("圧縮に失敗したため、元ファイルを分割します")
+                    segments = await self._split_audio_file(
+                        audio_file_path, target_size_mb=20
+                    )
+                    if segments:
+                        return await self._transcribe_segments(segments, language)
+                    else:
+                        return f"音声ファイルが大きすぎます ({file_size / (1024*1024):.2f}MB > 25MB)。圧縮と分割の両方に失敗しました。"
+
+            logger.info(
+                f"音声ファイルを文字起こししています: {audio_file_path} ({file_size / (1024*1024):.2f}MB)"
+            )
+
             with open(audio_file, "rb") as file:
                 transcription = await self.client.audio.transcriptions.create(
                     model="whisper-1",
                     file=file,
                     language=language,
                     response_format="text",
-                    prompt="これはDiscordでの会話です。正確な文字起こしをお願いします。"
+                    prompt="これはDiscordでの会話です。正確な文字起こしをお願いします。",
                 )
-            
+
             if isinstance(transcription, str):
                 result = transcription.strip()
             else:
                 result = str(transcription).strip()
-            
+
             if not result:
                 logger.warning("文字起こし結果が空でした")
                 return "音声の文字起こしに失敗しました。"
-            
+
             logger.info(f"文字起こし完了。文字数: {len(result)}")
-            
+
             # 圧縮ファイルのクリーンアップ
-            if 'compressed_file' in locals() and compressed_file and compressed_file != audio_file_path:
+            if (
+                "compressed_file" in locals()
+                and compressed_file
+                and compressed_file != audio_file_path
+            ):
                 try:
                     Path(compressed_file).unlink()
                     logger.debug(f"圧縮ファイルを削除しました: {compressed_file}")
                 except Exception:
                     pass
-            
+
             return result
-            
+
         except openai.OpenAIError as e:
             logger.error(f"OpenAI API エラー: {e}")
             return f"音声の文字起こしでAPIエラーが発生しました: {str(e)}"
@@ -142,33 +187,37 @@ class OpenAIProvider(LLMProvider):
         try:
             import tempfile
             from pathlib import Path
-            
+
             input_path = Path(audio_file_path)
-            
+
             # 一時ファイル作成
-            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_file:
                 output_path = temp_file.name
-            
+
             # FFmpegで音声を圧縮（ビットレート下げる、サンプリングレート下げる）
             cmd = [
-                'ffmpeg', '-i', str(input_path),
-                '-acodec', 'mp3',           # MP3形式
-                '-ab', '64k',               # ビットレート64kbps（元は通常128k+）
-                '-ar', '16000',             # サンプリングレート16kHz（元は通常44.1kHz）
-                '-ac', '1',                 # モノラル
-                '-y',                       # 上書き確認なし
-                output_path
+                "ffmpeg",
+                "-i",
+                str(input_path),
+                "-acodec",
+                "mp3",  # MP3形式
+                "-ab",
+                "64k",  # ビットレート64kbps（元は通常128k+）
+                "-ar",
+                "16000",  # サンプリングレート16kHz（元は通常44.1kHz）
+                "-ac",
+                "1",  # モノラル
+                "-y",  # 上書き確認なし
+                output_path,
             ]
-            
+
             logger.info("音声ファイルを圧縮中...")
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            
+
             stdout, stderr = await process.communicate()
-            
+
             if process.returncode == 0:
                 output_file = Path(output_path)
                 if output_file.exists() and output_file.stat().st_size > 0:
@@ -180,51 +229,394 @@ class OpenAIProvider(LLMProvider):
             else:
                 logger.error(f"FFmpeg圧縮エラー: {stderr.decode()}")
                 return None
-                
+
         except Exception as e:
             logger.error(f"音声圧縮エラー: {e}")
             return None
-    
-    async def transcribe_with_timestamps(self, audio_file_path: str, language: str = "ja") -> dict:
+
+    async def _split_audio_file(
+        self, audio_file_path: str, target_size_mb: int = 20
+    ) -> list:
+        """音声ファイルを指定サイズ以下のセグメントに分割"""
+        try:
+            import tempfile
+            import asyncio
+            from pathlib import Path
+
+            input_path = Path(audio_file_path)
+            segments = []
+
+            # 音声の長さを取得
+            duration_cmd = [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                str(input_path),
+            ]
+
+            process = await asyncio.create_subprocess_exec(
+                *duration_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                logger.error(f"音声長さ取得エラー: {stderr.decode()}")
+                return []
+
+            total_duration = float(stdout.decode().strip())
+            logger.info(f"音声の総長さ: {total_duration:.2f}秒")
+
+            # ファイルサイズから必要な分割数を推定
+            file_size_mb = input_path.stat().st_size / (1024 * 1024)
+            estimated_segments = int((file_size_mb / target_size_mb) + 1)
+            segment_duration = total_duration / estimated_segments
+
+            logger.info(
+                f"推定分割数: {estimated_segments}, セグメント長: {segment_duration:.2f}秒"
+            )
+
+            # セグメントごとに分割
+            for i in range(estimated_segments):
+                start_time = i * segment_duration
+
+                # 最後のセグメントは残り全部
+                if i == estimated_segments - 1:
+                    duration = total_duration - start_time
+                else:
+                    duration = segment_duration
+
+                # 一時ファイル作成
+                with tempfile.NamedTemporaryFile(
+                    suffix=f"_segment_{i}.mp3", delete=False
+                ) as temp_file:
+                    output_path = temp_file.name
+
+                # FFmpegでセグメント抽出
+                split_cmd = [
+                    "ffmpeg",
+                    "-i",
+                    str(input_path),
+                    "-ss",
+                    str(start_time),  # 開始時間
+                    "-t",
+                    str(duration),  # 長さ
+                    "-acodec",
+                    "copy",  # 音声コーデックはコピー（高速）
+                    "-y",  # 上書き確認なし
+                    output_path,
+                ]
+
+                logger.info(f"セグメント {i+1}/{estimated_segments} を作成中...")
+                process = await asyncio.create_subprocess_exec(
+                    *split_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+                stdout, stderr = await process.communicate()
+
+                if process.returncode == 0:
+                    output_file = Path(output_path)
+                    if output_file.exists() and output_file.stat().st_size > 0:
+                        segments.append(
+                            {
+                                "file_path": output_path,
+                                "start_time": start_time,
+                                "duration": duration,
+                                "segment_index": i,
+                            }
+                        )
+                        logger.info(f"セグメント {i+1} 作成完了: {output_path}")
+                    else:
+                        logger.error(f"セグメント {i+1} の作成に失敗")
+                else:
+                    logger.error(f"セグメント {i+1} 分割エラー: {stderr.decode()}")
+
+            logger.info(f"音声分割完了: {len(segments)}個のセグメント")
+            return segments
+
+        except Exception as e:
+            logger.error(f"音声分割エラー: {e}")
+            return []
+
+    async def _transcribe_segments(self, segments: list, language: str = "ja") -> str:
+        """分割されたセグメントを順次文字起こしして統合"""
+        try:
+            transcriptions = []
+
+            for segment in segments:
+                segment_path = segment["file_path"]
+                start_time = segment["start_time"]
+                segment_index = segment["segment_index"]
+
+                logger.info(f"セグメント {segment_index + 1} の文字起こし中...")
+
+                # セグメントを個別に文字起こし
+                with open(segment_path, "rb") as file:
+                    transcription = await self.client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=file,
+                        language=language,
+                        response_format="text",
+                        prompt="これはDiscordでの会話の一部です。前後のセグメントと繋がりのある内容です。",
+                    )
+
+                if isinstance(transcription, str):
+                    result = transcription.strip()
+                else:
+                    result = str(transcription).strip()
+
+                if result:
+                    # タイムスタンプ情報を含めて保存
+                    minutes = int(start_time // 60)
+                    seconds = int(start_time % 60)
+                    transcriptions.append(
+                        {
+                            "text": result,
+                            "start_time": start_time,
+                            "time_label": f"[{minutes:02d}:{seconds:02d}]",
+                            "segment_index": segment_index,
+                        }
+                    )
+                    logger.info(
+                        f"セグメント {segment_index + 1} 完了 ({len(result)}文字)"
+                    )
+                else:
+                    logger.warning(
+                        f"セグメント {segment_index + 1} の文字起こし結果が空でした"
+                    )
+
+            # セグメントのクリーンアップ
+            for segment in segments:
+                try:
+                    Path(segment["file_path"]).unlink()
+                    logger.debug(f"セグメントファイルを削除: {segment['file_path']}")
+                except Exception as e:
+                    logger.warning(f"セグメントファイル削除エラー: {e}")
+
+            if not transcriptions:
+                return "分割された音声セグメントの文字起こしに失敗しました。"
+
+            # 結果を統合（タイムスタンプ付き）
+            combined_text = "【分割音声の文字起こし結果】\n\n"
+            for trans in transcriptions:
+                combined_text += f"{trans['time_label']} {trans['text']}\n\n"
+
+            total_chars = sum(len(trans["text"]) for trans in transcriptions)
+            logger.info(
+                f"分割音声の文字起こし完了: {len(transcriptions)}セグメント, 総文字数: {total_chars}"
+            )
+
+            return combined_text.strip()
+
+        except Exception as e:
+            logger.error(f"セグメント文字起こしエラー: {e}")
+            # エラー時もセグメントファイルをクリーンアップ
+            for segment in segments:
+                try:
+                    Path(segment["file_path"]).unlink()
+                except:
+                    pass
+            return f"分割音声の文字起こし中にエラーが発生しました: {e}"
+
+    async def _transcribe_segments_with_timestamps(
+        self, segments: list, language: str = "ja"
+    ) -> dict:
+        """分割されたセグメントをタイムスタンプ付きで文字起こしして統合"""
+        try:
+            all_segments = []
+            combined_text = ""
+            total_duration = 0
+
+            for segment in segments:
+                segment_path = segment["file_path"]
+                start_time_offset = segment["start_time"]
+                segment_index = segment["segment_index"]
+                segment_duration = segment["duration"]
+
+                logger.info(
+                    f"セグメント {segment_index + 1} のタイムスタンプ付き文字起こし中..."
+                )
+
+                # セグメントをタイムスタンプ付きで文字起こし
+                with open(segment_path, "rb") as file:
+                    transcription = await self.client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=file,
+                        language=language,
+                        response_format="verbose_json",
+                        timestamp_granularities=["segment"],
+                        prompt="これはDiscordでの会話の一部です。前後のセグメントと繋がりのある内容です。",
+                    )
+
+                # 結果を処理
+                if hasattr(transcription, "text"):
+                    segment_text = transcription.text.strip()
+                else:
+                    segment_text = str(transcription).strip()
+
+                if segment_text:
+                    combined_text += segment_text + "\n"
+
+                # セグメント情報を処理（タイムスタンプを全体の時間軸に調整）
+                if hasattr(transcription, "segments") and transcription.segments:
+                    for ts_segment in transcription.segments:
+                        adjusted_segment = {
+                            "id": len(all_segments),
+                            "seek": ts_segment.get("seek", 0),
+                            "start": ts_segment.get("start", 0) + start_time_offset,
+                            "end": ts_segment.get("end", 0) + start_time_offset,
+                            "text": ts_segment.get("text", ""),
+                            "tokens": ts_segment.get("tokens", []),
+                            "temperature": ts_segment.get("temperature", 0.0),
+                            "avg_logprob": ts_segment.get("avg_logprob", 0.0),
+                            "compression_ratio": ts_segment.get(
+                                "compression_ratio", 0.0
+                            ),
+                            "no_speech_prob": ts_segment.get("no_speech_prob", 0.0),
+                        }
+                        all_segments.append(adjusted_segment)
+
+                total_duration = max(
+                    total_duration, start_time_offset + segment_duration
+                )
+                logger.info(
+                    f"セグメント {segment_index + 1} 完了 ({len(segment_text)}文字)"
+                )
+
+            # セグメントのクリーンアップ
+            for segment in segments:
+                try:
+                    Path(segment["file_path"]).unlink()
+                    logger.debug(f"セグメントファイルを削除: {segment['file_path']}")
+                except Exception as e:
+                    logger.warning(f"セグメントファイル削除エラー: {e}")
+
+            if not combined_text.strip():
+                return {
+                    "text": "分割された音声セグメントの文字起こしに失敗しました。",
+                    "segments": [],
+                    "language": language,
+                    "duration": 0,
+                }
+
+            result = {
+                "text": combined_text.strip(),
+                "segments": all_segments,
+                "language": language,
+                "duration": total_duration,
+            }
+
+            logger.info(
+                f"分割音声のタイムスタンプ付き文字起こし完了: {len(all_segments)}セグメント, 総文字数: {len(combined_text)}, 総時間: {total_duration:.2f}秒"
+            )
+            return result
+
+        except Exception as e:
+            logger.error(f"セグメントタイムスタンプ付き文字起こしエラー: {e}")
+            # エラー時もセグメントファイルをクリーンアップ
+            for segment in segments:
+                try:
+                    Path(segment["file_path"]).unlink()
+                except:
+                    pass
+            return {
+                "text": f"分割音声のタイムスタンプ付き文字起こし中にエラーが発生しました: {e}",
+                "segments": [],
+                "language": language,
+                "duration": 0,
+            }
+
+    async def transcribe_with_timestamps(
+        self, audio_file_path: str, language: str = "ja"
+    ) -> dict:
         """タイムスタンプ付きで音声ファイルを文字起こし"""
         try:
             from pathlib import Path
             import openai
-            
+
             audio_file = Path(audio_file_path)
             if not audio_file.exists():
-                raise FileNotFoundError(f"音声ファイルが見つかりません: {audio_file_path}")
-            
+                raise FileNotFoundError(
+                    f"音声ファイルが見つかりません: {audio_file_path}"
+                )
+
             # ファイルサイズチェック
             file_size = audio_file.stat().st_size
             max_size = 25 * 1024 * 1024  # 25MB
-            
+
             compressed_file = None
             if file_size > max_size:
-                logger.warning(f"音声ファイルが大きすぎます: {file_size / (1024*1024):.2f}MB > 25MB")
+                logger.warning(
+                    f"音声ファイルが大きすぎます: {file_size / (1024*1024):.2f}MB > 25MB"
+                )
                 compressed_file = await self._compress_audio_file(audio_file_path)
                 if compressed_file:
                     audio_file = Path(compressed_file)
                     new_size = audio_file.stat().st_size
-                    logger.info(f"音声ファイルを圧縮しました: {new_size / (1024*1024):.2f}MB")
-                    
+                    logger.info(
+                        f"音声ファイルを圧縮しました: {new_size / (1024*1024):.2f}MB"
+                    )
+
                     if new_size > max_size:
+                        logger.info(
+                            "圧縮後もサイズが大きいため、音声分割してタイムスタンプ付き文字起こしを実行します"
+                        )
+                        # 分割処理（タイムスタンプ付き）
+                        segments = await self._split_audio_file(
+                            compressed_file, target_size_mb=20
+                        )
+                        if segments:
+                            result = await self._transcribe_segments_with_timestamps(
+                                segments, language
+                            )
+                            # 圧縮ファイルをクリーンアップ
+                            try:
+                                Path(compressed_file).unlink()
+                                logger.debug(
+                                    f"圧縮ファイルを削除しました: {compressed_file}"
+                                )
+                            except Exception as e:
+                                logger.warning(f"圧縮ファイル削除エラー: {e}")
+                            return result
+                        else:
+                            return {
+                                "text": f"音声ファイルが大きすぎます ({new_size / (1024*1024):.2f}MB > 25MB)。音声分割にも失敗しました。",
+                                "segments": [],
+                                "language": language,
+                                "duration": 0,
+                            }
+                else:
+                    # 圧縮に失敗した場合、元ファイルを直接分割
+                    logger.info(
+                        "圧縮に失敗したため、元ファイルを分割してタイムスタンプ付き文字起こしを実行します"
+                    )
+                    segments = await self._split_audio_file(
+                        audio_file_path, target_size_mb=20
+                    )
+                    if segments:
+                        return await self._transcribe_segments_with_timestamps(
+                            segments, language
+                        )
+                    else:
                         return {
-                            "text": f"音声ファイルが大きすぎます ({new_size / (1024*1024):.2f}MB > 25MB)。より短い録音にするか、音質を下げてください。",
+                            "text": f"音声ファイルが大きすぎます ({file_size / (1024*1024):.2f}MB > 25MB)。圧縮と分割の両方に失敗しました。",
                             "segments": [],
                             "language": language,
-                            "duration": 0
+                            "duration": 0,
                         }
-                else:
-                    return {
-                        "text": f"音声ファイルが大きすぎます ({file_size / (1024*1024):.2f}MB > 25MB)。より短い録音にするか、音質を下げてください。",
-                        "segments": [],
-                        "language": language,
-                        "duration": 0
-                    }
-            
-            logger.info(f"タイムスタンプ付き文字起こしを実行中: {audio_file_path} ({file_size / (1024*1024):.2f}MB)")
-            
+
+            logger.info(
+                f"タイムスタンプ付き文字起こしを実行中: {audio_file_path} ({file_size / (1024*1024):.2f}MB)"
+            )
+
             with open(audio_file, "rb") as file:
                 transcription = await self.client.audio.transcriptions.create(
                     model="whisper-1",
@@ -232,11 +624,11 @@ class OpenAIProvider(LLMProvider):
                     language=language,
                     response_format="verbose_json",
                     timestamp_granularities=["segment"],
-                    prompt="これはDiscordでの会話です。正確な文字起こしをお願いします。"
+                    prompt="これはDiscordでの会話です。正確な文字起こしをお願いします。",
                 )
-            
+
             logger.info("タイムスタンプ付き文字起こし完了")
-            
+
             # 圧縮ファイルのクリーンアップ
             if compressed_file and compressed_file != audio_file_path:
                 try:
@@ -244,21 +636,29 @@ class OpenAIProvider(LLMProvider):
                     logger.debug(f"圧縮ファイルを削除しました: {compressed_file}")
                 except Exception:
                     pass
-            
+
             return {
                 "text": transcription.text,
-                "segments": transcription.segments if hasattr(transcription, 'segments') else [],
-                "language": transcription.language if hasattr(transcription, 'language') else language,
-                "duration": transcription.duration if hasattr(transcription, 'duration') else 0
+                "segments": (
+                    transcription.segments if hasattr(transcription, "segments") else []
+                ),
+                "language": (
+                    transcription.language
+                    if hasattr(transcription, "language")
+                    else language
+                ),
+                "duration": (
+                    transcription.duration if hasattr(transcription, "duration") else 0
+                ),
             }
-            
+
         except openai.OpenAIError as e:
             logger.error(f"OpenAI API エラー: {e}")
             return {
                 "text": f"音声の文字起こしでAPIエラーが発生しました: {str(e)}",
                 "segments": [],
                 "language": language,
-                "duration": 0
+                "duration": 0,
             }
         except Exception as e:
             logger.error(f"タイムスタンプ付き文字起こしエラー: {e}")
@@ -266,69 +666,75 @@ class OpenAIProvider(LLMProvider):
                 "text": f"音声の文字起こし中に予期しないエラーが発生しました: {str(e)}",
                 "segments": [],
                 "language": language,
-                "duration": 0
+                "duration": 0,
             }
-    
-    async def generate_text(self, prompt: str, max_tokens: int = 2000, temperature: float = 0.3) -> str:
+
+    async def generate_text(
+        self, prompt: str, max_tokens: int = 2000, temperature: float = 0.3
+    ) -> str:
         """テキスト生成"""
         try:
             import openai
-            
+
             response = await self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
             )
-            
+
             result = response.choices[0].message.content.strip()
             if not result:
                 logger.warning("テキスト生成結果が空でした")
                 return "テキストの生成に失敗しました。"
-            
+
             return result
-            
+
         except openai.OpenAIError as e:
             logger.error(f"OpenAI API エラー: {e}")
             return f"テキスト生成でAPIエラーが発生しました: {str(e)}"
         except Exception as e:
             logger.error(f"テキスト生成エラー: {e}")
             return f"テキスト生成中に予期しないエラーが発生しました: {str(e)}"
-    
-    async def generate_chat_completion(self, messages: List[Dict[str, str]], 
-                                     max_tokens: int = 2000, temperature: float = 0.3) -> str:
+
+    async def generate_chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: int = 2000,
+        temperature: float = 0.3,
+    ) -> str:
         """チャット形式でのテキスト生成"""
         try:
             import openai
-            
+
             response = await self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=messages,
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
             )
-            
+
             result = response.choices[0].message.content.strip()
             if not result:
                 logger.warning("チャット生成結果が空でした")
                 return "チャットの生成に失敗しました。"
-            
+
             return result
-            
+
         except openai.OpenAIError as e:
             logger.error(f"OpenAI API エラー: {e}")
             return f"チャット生成でAPIエラーが発生しました: {str(e)}"
         except Exception as e:
             logger.error(f"チャット生成エラー: {e}")
             return f"チャット生成中に予期しないエラーが発生しました: {str(e)}"
-    
+
     def validate_api_key(self) -> bool:
         """APIキーの有効性をチェック"""
         try:
             return bool(self.client.api_key and len(self.client.api_key) > 10)
         except Exception:
             return False
-    
+
     @property
     def provider_name(self) -> str:
         return "OpenAI"
@@ -336,23 +742,24 @@ class OpenAIProvider(LLMProvider):
 
 class GeminiProvider(LLMProvider):
     """Gemini APIプロバイダー"""
-    
+
     def __init__(self, api_key: Optional[str] = None):
         import os
-        
-        self.api_key = api_key or os.getenv('GEMINI_API_KEY')
+
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         super().__init__(self.api_key)
-        
+
         try:
             import google.generativeai as genai
+
             genai.configure(api_key=self.api_key)
             self.genai = genai
-            
+
             # モデルの初期化（複数のモデルを試行）
-            model_names = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+            model_names = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
             self.text_model = None
             self.model_name = None
-            
+
             for model_name in model_names:
                 try:
                     self.text_model = genai.GenerativeModel(model_name)
@@ -362,60 +769,75 @@ class GeminiProvider(LLMProvider):
                 except Exception as e:
                     logger.warning(f"モデル {model_name} の初期化に失敗: {e}")
                     continue
-            
+
             if not self.text_model:
                 raise ValueError("利用可能なGeminiモデルが見つかりませんでした")
         except ImportError:
-            raise ImportError("google-generativeai ライブラリがインストールされていません。pip install google-generativeai でインストールしてください。")
-    
+            raise ImportError(
+                "google-generativeai ライブラリがインストールされていません。pip install google-generativeai でインストールしてください。"
+            )
+
     def _validate_api_key(self) -> None:
         if not self.api_key:
             raise ValueError("Gemini APIキーが設定されていません")
-    
+
     async def transcribe(self, audio_file_path: str, language: str = "ja") -> str:
         """音声ファイルを文字起こし（Geminiは現在音声転写をサポートしていないため、代替案を提示）"""
-        logger.warning("Gemini は直接的な音声転写をサポートしていません。OpenAI Whisper の使用を推奨します。")
+        logger.warning(
+            "Gemini は直接的な音声転写をサポートしていません。OpenAI Whisper の使用を推奨します。"
+        )
         return "Gemini プロバイダーでは音声転写は現在サポートされていません。OpenAI プロバイダーを使用してください。"
-    
-    async def transcribe_with_timestamps(self, audio_file_path: str, language: str = "ja") -> dict:
+
+    async def transcribe_with_timestamps(
+        self, audio_file_path: str, language: str = "ja"
+    ) -> dict:
         """タイムスタンプ付きで音声ファイルを文字起こし"""
         logger.warning("Gemini は直接的な音声転写をサポートしていません。")
         return {
             "text": "Gemini プロバイダーでは音声転写は現在サポートされていません。OpenAI プロバイダーを使用してください。",
             "segments": [],
             "language": language,
-            "duration": 0
+            "duration": 0,
         }
-    
-    async def generate_text(self, prompt: str, max_tokens: int = 2000, temperature: float = 0.3) -> str:
+
+    async def generate_text(
+        self, prompt: str, max_tokens: int = 2000, temperature: float = 0.3
+    ) -> str:
         """テキスト生成"""
         try:
             # Gemini の設定
             generation_config = {
-                'max_output_tokens': max_tokens,
-                'temperature': temperature,
+                "max_output_tokens": max_tokens,
+                "temperature": temperature,
             }
-            
+
             # 同期メソッドを非同期で実行
             import asyncio
+
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
-                None, 
-                lambda: self.text_model.generate_content(prompt, generation_config=generation_config)
+                None,
+                lambda: self.text_model.generate_content(
+                    prompt, generation_config=generation_config
+                ),
             )
-            
+
             if response.text:
                 return response.text.strip()
             else:
                 logger.warning("Gemini テキスト生成結果が空でした")
                 return "テキストの生成に失敗しました。"
-                
+
         except Exception as e:
             logger.error(f"Gemini API エラー: {e}")
             return f"テキスト生成でAPIエラーが発生しました: {str(e)}"
-    
-    async def generate_chat_completion(self, messages: List[Dict[str, str]], 
-                                     max_tokens: int = 2000, temperature: float = 0.3) -> str:
+
+    async def generate_chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: int = 2000,
+        temperature: float = 0.3,
+    ) -> str:
         """チャット形式でのテキスト生成"""
         try:
             # メッセージを Gemini 形式に変換
@@ -423,29 +845,29 @@ class GeminiProvider(LLMProvider):
             for message in messages:
                 role = message.get("role", "user")
                 content = message.get("content", "")
-                
+
                 if role == "system":
                     prompt_parts.append(f"システム: {content}")
                 elif role == "user":
                     prompt_parts.append(f"ユーザー: {content}")
                 elif role == "assistant":
                     prompt_parts.append(f"アシスタント: {content}")
-            
+
             full_prompt = "\n\n".join(prompt_parts)
-            
+
             return await self.generate_text(full_prompt, max_tokens, temperature)
-            
+
         except Exception as e:
             logger.error(f"Gemini チャット生成エラー: {e}")
             return f"チャット生成中に予期しないエラーが発生しました: {str(e)}"
-    
+
     def validate_api_key(self) -> bool:
         """APIキーの有効性をチェック"""
         try:
             return bool(self.api_key and len(self.api_key) > 10)
         except Exception:
             return False
-    
+
     @property
     def provider_name(self) -> str:
         return "Gemini"
@@ -454,13 +876,14 @@ class GeminiProvider(LLMProvider):
 def create_llm_provider(provider_name: str = None) -> LLMProvider:
     """LLMプロバイダーのファクトリー関数"""
     import os
-    
+
     if provider_name is None:
-        provider_name = os.getenv('LLM_PROVIDER', 'openai').lower()
-    
-    if provider_name == 'openai':
+        provider_name = os.getenv("LLM_PROVIDER", "openai").lower()
+
+    if provider_name == "openai":
         return OpenAIProvider()
-    elif provider_name == 'gemini':
+    elif provider_name == "gemini":
         return GeminiProvider()
     else:
         raise ValueError(f"サポートされていないLLMプロバイダー: {provider_name}")
+
