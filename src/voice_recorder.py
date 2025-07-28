@@ -21,6 +21,12 @@ class VoiceRecorder:
     async def start_recording(self, voice_client: discord.VoiceClient) -> None:
         """音声録音を開始"""
         try:
+            if not voice_client or not voice_client.is_connected():
+                raise Exception("Not connected to voice channel.")
+            
+            if not voice_client.channel:
+                raise Exception("Voice client is not connected to any channel.")
+            
             self.sink = discord.sinks.WaveSink()
             self.recording_finished = False
             

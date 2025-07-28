@@ -91,11 +91,15 @@ async def start_recording(ctx):
         if ctx.voice_client:
             # 既に接続している場合は移動
             await ctx.voice_client.move_to(channel)
+            vc = ctx.voice_client
         else:
             # 新規接続
             vc = await channel.connect()
         
-        await voice_recorder.start_recording(ctx.voice_client)
+        # 接続の安定を待つ
+        await asyncio.sleep(1)
+        
+        await voice_recorder.start_recording(vc)
         recording_status[guild_id] = True  # 録音状態を記録
         await ctx.send(f'🎙️ {channel.name}で録音を開始しました。\n`!stop`で録音を停止できます。')
         logger.info(f'録音開始: {channel.name} (ユーザー: {ctx.author.display_name})')
