@@ -85,6 +85,17 @@ class OpenAIProvider(LLMProvider):
                     f"音声ファイルが見つかりません: {audio_file_path}"
                 )
 
+            # 音声前処理による品質向上
+            logger.info("音声前処理を実行します...")
+            enhanced_file = await self._enhance_audio_for_transcription(audio_file_path)
+
+            if enhanced_file:
+                audio_file = Path(enhanced_file)
+                logger.info("音声前処理が完了しました")
+            else:
+                logger.warning("音声前処理に失敗しました。元ファイルを使用します")
+                audio_file = Path(audio_file_path)
+
             # ファイルサイズチェック（OpenAI Whisper API の制限: 25MB）
             file_size = audio_file.stat().st_size
             max_size = 25 * 1024 * 1024  # 25MB
@@ -158,7 +169,20 @@ class OpenAIProvider(LLMProvider):
 
             logger.info(f"文字起こし完了。文字数: {len(result)}")
 
-            # 圧縮ファイルのクリーンアップ
+            # 一時ファイルのクリーンアップ
+            # 前処理ファイル
+            if (
+                "enhanced_file" in locals()
+                and enhanced_file
+                and enhanced_file != audio_file_path
+            ):
+                try:
+                    Path(enhanced_file).unlink()
+                    logger.debug(f"前処理ファイルを削除しました: {enhanced_file}")
+                except Exception:
+                    pass
+
+            # 圧縮ファイル
             if (
                 "compressed_file" in locals()
                 and compressed_file
@@ -232,6 +256,165 @@ class OpenAIProvider(LLMProvider):
 
         except Exception as e:
             logger.error(f"音声圧縮エラー: {e}")
+            return None
+
+    async def _preprocess_audio_file(self, audio_file_path: str) -> str:
+        """音声ファイルを前処理して品質を向上"""
+        try:
+            import tempfile
+            from pathlib import Path
+
+            input_path = Path(audio_file_path)
+
+            # 一時ファイル作成
+            with tempfile.NamedTemporaryFile(
+                suffix="_preprocessed.wav", delete=False
+            ) as temp_file:
+                output_path = temp_file.name
+
+            # FFmpegで音声前処理
+            cmd = [
+                "ffmpeg",
+                "-i",
+                str(input_path),
+                # ノイズ除去フィルター
+                "-af",
+                "highpass=f=80,lowpass=f=8000,volume=2.0,dynaudnorm",
+                # 音声品質最適化
+                "-acodec",
+                "pcm_s16le",  # 16bit PCM
+                "-ar",
+                "16000",  # Whisperに最適な16kHz
+                "-ac",
+                "1",  # モノラル
+                "-y",  # 上書き確認なし
+                output_path,
+            ]
+
+            logger.info("音声ファイルを前処理中...")
+            process = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                output_file = Path(output_path)
+                if output_file.exists() and output_file.stat().st_size > 0:
+                    logger.info(f"音声ファイル前処理完了: {output_path}")
+                    return output_path
+                else:
+                    logger.error("前処理ファイルが正常に作成されませんでした")
+                    return None
+            else:
+                logger.error(f"FFmpeg前処理エラー: {stderr.decode()}")
+                return None
+
+        except Exception as e:
+            logger.error(f"音声前処理エラー: {e}")
+            return None
+
+    async def _enhance_audio_for_transcription(self, audio_file_path: str) -> str:
+        """文字起こし精度向上のための音声品質向上処理"""
+        try:
+            import tempfile
+            import os
+            from pathlib import Path
+
+            # 環境変数での前処理設定
+            enable_preprocessing = (
+                os.getenv("ENABLE_AUDIO_PREPROCESSING", "true").lower() == "true"
+            )
+            if not enable_preprocessing:
+                logger.info("音声前処理が無効化されています")
+                return None
+
+            input_path = Path(audio_file_path)
+
+            # 一時ファイル作成
+            with tempfile.NamedTemporaryFile(
+                suffix="_enhanced.wav", delete=False
+            ) as temp_file:
+                output_path = temp_file.name
+
+            # 前処理強度の設定
+            preprocessing_level = os.getenv(
+                "AUDIO_PREPROCESSING_LEVEL", "medium"
+            ).lower()
+
+            if preprocessing_level == "light":
+                # 軽い前処理
+                audio_filter = (
+                    "highpass=f=80,"  # 軽いローカット
+                    "lowpass=f=8000,"  # 軽いハイカット
+                    "volume=1.2,"  # 軽い音量調整
+                    "dynaudnorm"  # 動的音量正規化のみ
+                )
+            elif preprocessing_level == "heavy":
+                # 強い前処理
+                audio_filter = (
+                    "highpass=f=120,"  # 強いローカット
+                    "lowpass=f=6000,"  # 強いハイカット
+                    "volume=2.0,"  # 強い音量調整
+                    "dynaudnorm=p=0.95:s=3,"  # 強い動的音量正規化
+                    "deesser=i=0.15:m=0.15:f=5500:s=o,"  # 強い歯擦音除去
+                    "compand=0.3,1:6:-70/-60,-20,0,0:0:0.2:0"  # コンプレッサー
+                )
+            else:
+                # 中程度の前処理（デフォルト）
+                audio_filter = (
+                    "highpass=f=100,"  # 低周波ノイズ除去
+                    "lowpass=f=7000,"  # 高周波ノイズ除去
+                    "volume=1.5,"  # 音量調整
+                    "dynaudnorm=p=0.9:s=5,"  # 動的音量正規化
+                    "deesser=i=0.1:m=0.1:f=6000:s=o"  # 歯擦音除去
+                )
+
+            # 高度な音声品質向上処理
+            cmd = [
+                "ffmpeg",
+                "-i",
+                str(input_path),
+                # 複合フィルター
+                "-af",
+                audio_filter,
+                # 最適な音声形式
+                "-acodec",
+                "pcm_s16le",
+                "-ar",
+                "16000",  # Whisper最適化
+                "-ac",
+                "1",  # モノラル
+                "-y",
+                output_path,
+            ]
+
+            logger.info("音声品質向上処理中...")
+            process = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                output_file = Path(output_path)
+                if output_file.exists() and output_file.stat().st_size > 0:
+                    original_size = input_path.stat().st_size / (1024 * 1024)
+                    enhanced_size = output_file.stat().st_size / (1024 * 1024)
+                    logger.info(
+                        f"音声品質向上完了: {output_path} "
+                        f"({original_size:.2f}MB → {enhanced_size:.2f}MB)"
+                    )
+                    return output_path
+                else:
+                    logger.error("品質向上ファイルが正常に作成されませんでした")
+                    return None
+            else:
+                logger.error(f"FFmpeg品質向上エラー: {stderr.decode()}")
+                return None
+
+        except Exception as e:
+            logger.error(f"音声品質向上エラー: {e}")
             return None
 
     async def _split_audio_file(
@@ -548,6 +731,17 @@ class OpenAIProvider(LLMProvider):
                     f"音声ファイルが見つかりません: {audio_file_path}"
                 )
 
+            # 音声前処理による品質向上
+            logger.info("音声前処理を実行します...")
+            enhanced_file = await self._enhance_audio_for_transcription(audio_file_path)
+
+            if enhanced_file:
+                audio_file = Path(enhanced_file)
+                logger.info("音声前処理が完了しました")
+            else:
+                logger.warning("音声前処理に失敗しました。元ファイルを使用します")
+                audio_file = Path(audio_file_path)
+
             # ファイルサイズチェック
             file_size = audio_file.stat().st_size
             max_size = 25 * 1024 * 1024  # 25MB
@@ -629,7 +823,20 @@ class OpenAIProvider(LLMProvider):
 
             logger.info("タイムスタンプ付き文字起こし完了")
 
-            # 圧縮ファイルのクリーンアップ
+            # 一時ファイルのクリーンアップ
+            # 前処理ファイル
+            if (
+                "enhanced_file" in locals()
+                and enhanced_file
+                and enhanced_file != audio_file_path
+            ):
+                try:
+                    Path(enhanced_file).unlink()
+                    logger.debug(f"前処理ファイルを削除しました: {enhanced_file}")
+                except Exception:
+                    pass
+
+            # 圧縮ファイル
             if compressed_file and compressed_file != audio_file_path:
                 try:
                     Path(compressed_file).unlink()
@@ -886,4 +1093,3 @@ def create_llm_provider(provider_name: str = None) -> LLMProvider:
         return GeminiProvider()
     else:
         raise ValueError(f"サポートされていないLLMプロバイダー: {provider_name}")
-
