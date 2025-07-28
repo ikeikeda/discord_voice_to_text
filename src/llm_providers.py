@@ -78,6 +78,7 @@ class OpenAIProvider(LLMProvider):
         try:
             from pathlib import Path
             import openai
+            import os
 
             audio_file = Path(audio_file_path)
             if not audio_file.exists():
@@ -149,14 +150,22 @@ class OpenAIProvider(LLMProvider):
                 f"音声ファイルを文字起こししています: {audio_file_path} ({file_size / (1024*1024):.2f}MB)"
             )
 
+            # 最適化されたWhisperパラメータを取得
+            whisper_params = self._get_whisper_parameters("discord")
+            whisper_params["language"] = language
+
+            # パフォーマンス監視
+            import time
+
+            start_time = time.time()
+
             with open(audio_file, "rb") as file:
                 transcription = await self.client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=file,
-                    language=language,
-                    response_format="text",
-                    prompt="これはDiscordでの会話です。正確な文字起こしをお願いします。",
+                    file=file, **whisper_params
                 )
+
+            processing_time = time.time() - start_time
+            logger.info(f"Whisper処理時間: {processing_time:.2f}秒")
 
             if isinstance(transcription, str):
                 result = transcription.strip()
@@ -417,6 +426,70 @@ class OpenAIProvider(LLMProvider):
             logger.error(f"音声品質向上エラー: {e}")
             return None
 
+    def _get_whisper_parameters(self, audio_context: str = "discord") -> dict:
+        """文脈に応じた最適化されたWhisperパラメータを取得"""
+        import os
+
+        # 基本パラメータ
+        params = {"model": "whisper-1", "language": "ja", "response_format": "text"}
+
+        # 文脈別プロンプトの最適化
+        if audio_context == "discord":
+            # Discord会話用の最適化プロンプト
+            context_keywords = os.getenv(
+                "DISCORD_CONTEXT_KEYWORDS",
+                "Discord,ボイスチャット,会議,ミーティング,議論,相談,チーム,プロジェクト",
+            )
+
+            params[
+                "prompt"
+            ] = f"""これはDiscordでの{context_keywords.replace(',', '、')}です。
+日本語での自然な会話を正確に文字起こししてください。
+専門用語、固有名詞、カタカナ語も正確に認識してください。
+音声の不明瞭な部分は文脈から推測して補完してください。"""
+
+        elif audio_context == "segment":
+            # 分割セグメント用の最適化プロンプト
+            params[
+                "prompt"
+            ] = """これは長い会話の一部分です。
+前後のセグメントと繋がりのある内容として、
+文脈を考慮して自然な日本語に文字起こししてください。
+文の途中で切れている場合も自然に補完してください。"""
+
+        # 温度パラメータの最適化（利用可能であれば）
+        temperature = float(os.getenv("WHISPER_TEMPERATURE", "0.0"))
+        if temperature > 0:
+            params["temperature"] = temperature
+
+        # レスポンス形式の設定
+        response_format = os.getenv("WHISPER_RESPONSE_FORMAT", "text")
+        if response_format in ["text", "json", "srt", "verbose_json", "vtt"]:
+            params["response_format"] = response_format
+
+        logger.debug(f"Whisperパラメータ: {params}")
+        return params
+
+    def _get_whisper_timestamp_parameters(self, audio_context: str = "discord") -> dict:
+        """タイムスタンプ付き文字起こし用の最適化パラメータ"""
+        import os
+
+        params = self._get_whisper_parameters(audio_context)
+
+        # タイムスタンプ用の設定
+        params["response_format"] = "verbose_json"
+        params["timestamp_granularities"] = ["segment"]
+
+        # より詳細なタイムスタンプが必要な場合
+        if os.getenv("ENABLE_WORD_TIMESTAMPS", "false").lower() == "true":
+            try:
+                params["timestamp_granularities"] = ["word", "segment"]
+                logger.info("単語レベルのタイムスタンプを有効化しました")
+            except Exception as e:
+                logger.warning(f"単語レベルタイムスタンプの設定に失敗: {e}")
+
+        return params
+
     async def _split_audio_file(
         self, audio_file_path: str, target_size_mb: int = 20
     ) -> list:
@@ -541,14 +614,13 @@ class OpenAIProvider(LLMProvider):
 
                 logger.info(f"セグメント {segment_index + 1} の文字起こし中...")
 
-                # セグメントを個別に文字起こし
+                # セグメントを個別に文字起こし（最適化パラメータ使用）
+                whisper_params = self._get_whisper_parameters("segment")
+                whisper_params["language"] = language
+
                 with open(segment_path, "rb") as file:
                     transcription = await self.client.audio.transcriptions.create(
-                        model="whisper-1",
-                        file=file,
-                        language=language,
-                        response_format="text",
-                        prompt="これはDiscordでの会話の一部です。前後のセグメントと繋がりのある内容です。",
+                        file=file, **whisper_params
                     )
 
                 if isinstance(transcription, str):
@@ -628,15 +700,13 @@ class OpenAIProvider(LLMProvider):
                     f"セグメント {segment_index + 1} のタイムスタンプ付き文字起こし中..."
                 )
 
-                # セグメントをタイムスタンプ付きで文字起こし
+                # セグメントをタイムスタンプ付きで文字起こし（最適化パラメータ使用）
+                whisper_params = self._get_whisper_timestamp_parameters("segment")
+                whisper_params["language"] = language
+
                 with open(segment_path, "rb") as file:
                     transcription = await self.client.audio.transcriptions.create(
-                        model="whisper-1",
-                        file=file,
-                        language=language,
-                        response_format="verbose_json",
-                        timestamp_granularities=["segment"],
-                        prompt="これはDiscordでの会話の一部です。前後のセグメントと繋がりのある内容です。",
+                        file=file, **whisper_params
                     )
 
                 # 結果を処理
@@ -811,14 +881,13 @@ class OpenAIProvider(LLMProvider):
                 f"タイムスタンプ付き文字起こしを実行中: {audio_file_path} ({file_size / (1024*1024):.2f}MB)"
             )
 
+            # 最適化されたWhisperパラメータを取得（タイムスタンプ付き）
+            whisper_params = self._get_whisper_timestamp_parameters("discord")
+            whisper_params["language"] = language
+
             with open(audio_file, "rb") as file:
                 transcription = await self.client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=file,
-                    language=language,
-                    response_format="verbose_json",
-                    timestamp_granularities=["segment"],
-                    prompt="これはDiscordでの会話です。正確な文字起こしをお願いします。",
+                    file=file, **whisper_params
                 )
 
             logger.info("タイムスタンプ付き文字起こし完了")

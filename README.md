@@ -211,6 +211,10 @@ discord_voice_to_text/
 | `LOG_FILE` | ログファイル名 | `bot.log` |
 | `ENABLE_AUDIO_PREPROCESSING` | 音声前処理の有効/無効 | `true` |
 | `AUDIO_PREPROCESSING_LEVEL` | 前処理強度 (light/medium/heavy) | `medium` |
+| `WHISPER_TEMPERATURE` | Whisper温度パラメータ (0.0-1.0) | `0.0` |
+| `WHISPER_RESPONSE_FORMAT` | レスポンス形式 (text/json/srt/vtt) | `text` |
+| `ENABLE_WORD_TIMESTAMPS` | 単語レベルタイムスタンプ | `false` |
+| `DISCORD_CONTEXT_KEYWORDS` | Discord文脈キーワード | `Discord,ボイスチャット...` |
 
 ### 音声前処理機能
 
@@ -228,6 +232,27 @@ AUDIO_PREPROCESSING_LEVEL=medium
 ```
 
 **注意:** 前処理は処理時間を増加させますが、音質の悪い音声での精度向上が期待できます。
+
+### Whisperモデル最適化
+
+文字起こしの精度とパフォーマンスを向上させるための最適化機能：
+
+**パラメータ最適化:**
+- **コンテキスト別プロンプト**: Discord会話に特化した指示文
+- **温度パラメータ**: 結果の一貫性制御（0.0で最も決定論的）
+- **単語レベルタイムスタンプ**: より詳細な時刻情報
+
+**設定例:**
+```env
+# 高精度設定
+WHISPER_TEMPERATURE=0.0
+ENABLE_WORD_TIMESTAMPS=true
+
+# カスタムキーワード
+DISCORD_CONTEXT_KEYWORDS=プログラミング,開発,レビュー,GitHub
+```
+
+**パフォーマンス監視:** 処理時間の自動ログ出力で性能監視が可能
 
 ## 🤝 コントリビューション
 
