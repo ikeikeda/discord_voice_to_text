@@ -19,13 +19,15 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
-    async def transcribe(self, audio_file_path: str, language: str = "ja") -> str:
+    async def transcribe(
+        self, audio_file_path: str, language: str = "ja", guild_id: int = None
+    ) -> str:
         """音声ファイルを文字起こし"""
         pass
 
     @abstractmethod
     async def transcribe_with_timestamps(
-        self, audio_file_path: str, language: str = "ja"
+        self, audio_file_path: str, language: str = "ja", guild_id: int = None
     ) -> dict:
         """タイムスタンプ付きで音声ファイルを文字起こし"""
         pass
@@ -67,13 +69,21 @@ class OpenAIProvider(LLMProvider):
         from openai import AsyncOpenAI
 
         self.client = AsyncOpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
+        self.context_manager = None  # コンテキストマネージャーは後から設定
         super().__init__(self.client.api_key)
 
     def _validate_api_key(self) -> None:
         if not self.client.api_key:
             raise ValueError("OpenAI APIキーが設定されていません")
 
-    async def transcribe(self, audio_file_path: str, language: str = "ja") -> str:
+    def set_context_manager(self, context_manager):
+        """コンテキストマネージャーを設定"""
+        self.context_manager = context_manager
+        logger.debug("コンテキストマネージャーが設定されました")
+
+    async def transcribe(
+        self, audio_file_path: str, language: str = "ja", guild_id: int = None
+    ) -> str:
         """音声ファイルを文字起こし"""
         try:
             from pathlib import Path
@@ -150,8 +160,8 @@ class OpenAIProvider(LLMProvider):
                 f"音声ファイルを文字起こししています: {audio_file_path} ({file_size / (1024*1024):.2f}MB)"
             )
 
-            # 最適化されたWhisperパラメータを取得
-            whisper_params = self._get_whisper_parameters("discord")
+            # 最適化されたWhisperパラメータを取得（コンテキスト情報を含む）
+            whisper_params = self._get_whisper_parameters("discord", guild_id)
             whisper_params["language"] = language
 
             # パフォーマンス監視
@@ -426,36 +436,30 @@ class OpenAIProvider(LLMProvider):
             logger.error(f"音声品質向上エラー: {e}")
             return None
 
-    def _get_whisper_parameters(self, audio_context: str = "discord") -> dict:
+    def _get_whisper_parameters(
+        self, audio_context: str = "discord", guild_id: int = None
+    ) -> dict:
         """文脈に応じた最適化されたWhisperパラメータを取得"""
         import os
 
         # 基本パラメータ
         params = {"model": "whisper-1", "language": "ja", "response_format": "text"}
 
-        # 文脈別プロンプトの最適化
-        if audio_context == "discord":
-            # Discord会話用の最適化プロンプト
-            context_keywords = os.getenv(
-                "DISCORD_CONTEXT_KEYWORDS",
-                "Discord,ボイスチャット,会議,ミーティング,議論,相談,チーム,プロジェクト",
-            )
-
-            params[
-                "prompt"
-            ] = f"""これはDiscordでの{context_keywords.replace(',', '、')}です。
-日本語での自然な会話を正確に文字起こししてください。
-専門用語、固有名詞、カタカナ語も正確に認識してください。
-音声の不明瞭な部分は文脈から推測して補完してください。"""
-
-        elif audio_context == "segment":
-            # 分割セグメント用の最適化プロンプト
-            params[
-                "prompt"
-            ] = """これは長い会話の一部分です。
-前後のセグメントと繋がりのある内容として、
-文脈を考慮して自然な日本語に文字起こししてください。
-文の途中で切れている場合も自然に補完してください。"""
+        # コンテキストマネージャーからの動的プロンプト生成を試行
+        if guild_id and hasattr(self, "context_manager") and self.context_manager:
+            try:
+                enhanced_prompt = self.context_manager.get_context_enhanced_prompt(
+                    guild_id, audio_context
+                )
+                params["prompt"] = enhanced_prompt
+                logger.debug(f"コンテキスト強化プロンプトを使用: {guild_id}")
+            except Exception as e:
+                logger.warning(f"コンテキスト強化プロンプト生成エラー: {e}")
+                # フォールバック処理
+                params["prompt"] = self._generate_fallback_prompt(audio_context)
+        else:
+            # 従来の静的プロンプト生成
+            params["prompt"] = self._generate_fallback_prompt(audio_context)
 
         # 温度パラメータの最適化（利用可能であれば）
         temperature = float(os.getenv("WHISPER_TEMPERATURE", "0.0"))
@@ -470,11 +474,34 @@ class OpenAIProvider(LLMProvider):
         logger.debug(f"Whisperパラメータ: {params}")
         return params
 
-    def _get_whisper_timestamp_parameters(self, audio_context: str = "discord") -> dict:
+    def _generate_fallback_prompt(self, audio_context: str = "discord") -> str:
+        """フォールバック用の静的プロンプト生成"""
+        import os
+
+        if audio_context == "segment":
+            return """これは長い会話の一部分です。
+前後のセグメントと繋がりのある内容として、
+文脈を考慮して自然な日本語に文字起こししてください。
+文の途中で切れている場合も自然に補完してください。"""
+        else:
+            # Discord会話用の基本プロンプト
+            context_keywords = os.getenv(
+                "DISCORD_CONTEXT_KEYWORDS",
+                "Discord,ボイスチャット,会議,ミーティング,議論,相談,チーム,プロジェクト",
+            )
+
+            return f"""これはDiscordでの{context_keywords.replace(',', '、')}です。
+日本語での自然な会話を正確に文字起こししてください。
+専門用語、固有名詞、カタカナ語も正確に認識してください。
+音声の不明瞭な部分は文脈から推測して補完してください。"""
+
+    def _get_whisper_timestamp_parameters(
+        self, audio_context: str = "discord", guild_id: int = None
+    ) -> dict:
         """タイムスタンプ付き文字起こし用の最適化パラメータ"""
         import os
 
-        params = self._get_whisper_parameters(audio_context)
+        params = self._get_whisper_parameters(audio_context, guild_id)
 
         # タイムスタンプ用の設定
         params["response_format"] = "verbose_json"
@@ -881,8 +908,8 @@ class OpenAIProvider(LLMProvider):
                 f"タイムスタンプ付き文字起こしを実行中: {audio_file_path} ({file_size / (1024*1024):.2f}MB)"
             )
 
-            # 最適化されたWhisperパラメータを取得（タイムスタンプ付き）
-            whisper_params = self._get_whisper_timestamp_parameters("discord")
+            # 最適化されたWhisperパラメータを取得（タイムスタンプ付き、コンテキスト情報を含む）
+            whisper_params = self._get_whisper_timestamp_parameters("discord", guild_id)
             whisper_params["language"] = language
 
             with open(audio_file, "rb") as file:
@@ -1057,7 +1084,9 @@ class GeminiProvider(LLMProvider):
         if not self.api_key:
             raise ValueError("Gemini APIキーが設定されていません")
 
-    async def transcribe(self, audio_file_path: str, language: str = "ja") -> str:
+    async def transcribe(
+        self, audio_file_path: str, language: str = "ja", guild_id: int = None
+    ) -> str:
         """音声ファイルを文字起こし（Geminiは現在音声転写をサポートしていないため、代替案を提示）"""
         logger.warning(
             "Gemini は直接的な音声転写をサポートしていません。OpenAI Whisper の使用を推奨します。"
@@ -1065,7 +1094,7 @@ class GeminiProvider(LLMProvider):
         return "Gemini プロバイダーでは音声転写は現在サポートされていません。OpenAI プロバイダーを使用してください。"
 
     async def transcribe_with_timestamps(
-        self, audio_file_path: str, language: str = "ja"
+        self, audio_file_path: str, language: str = "ja", guild_id: int = None
     ) -> dict:
         """タイムスタンプ付きで音声ファイルを文字起こし"""
         logger.warning("Gemini は直接的な音声転写をサポートしていません。")
