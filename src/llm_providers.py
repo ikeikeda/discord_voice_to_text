@@ -69,6 +69,9 @@ class OpenAIProvider(LLMProvider):
         from openai import AsyncOpenAI
 
         self.client = AsyncOpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
+        # チャット生成に使用するモデル（精度向上のため上位モデルを既定に）
+        # 例: gpt-4o, gpt-4o-mini, o3-mini（必要に応じて切替）
+        self.chat_model = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o")
         self.context_manager = None  # コンテキストマネージャーは後から設定
         super().__init__(self.client.api_key)
 
@@ -480,9 +483,8 @@ class OpenAIProvider(LLMProvider):
 
         if audio_context == "segment":
             return """これは長い会話の一部分です。
-前後のセグメントと繋がりのある内容として、
-文脈を考慮して自然な日本語に文字起こししてください。
-文の途中で切れている場合も自然に補完してください。"""
+前後の内容は参照できません。聞き取り不能・不明確な箇所は推測で補完せず、
+[聞き取り不能] / [不明] と明示してください。文の途中で切れている場合はその旨が分かる形で記してください。"""
         else:
             # Discord会話用の基本プロンプト
             context_keywords = os.getenv(
@@ -491,9 +493,9 @@ class OpenAIProvider(LLMProvider):
             )
 
             return f"""これはDiscordでの{context_keywords.replace(',', '、')}です。
-日本語での自然な会話を正確に文字起こししてください。
-専門用語、固有名詞、カタカナ語も正確に認識してください。
-音声の不明瞭な部分は文脈から推測して補完してください。"""
+日本語での会話をできる限り正確に文字起こししてください。
+専門用語、固有名詞、カタカナ語も正確に表記してください。
+音声の不明瞭な部分は推測で補完せず、[聞き取り不能] と明記してください。数値・固有名詞が不確かな場合は [不明] としてください。"""
 
     def _get_whisper_timestamp_parameters(
         self, audio_context: str = "discord", guild_id: int = None
@@ -980,7 +982,7 @@ class OpenAIProvider(LLMProvider):
             import openai
 
             response = await self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=self.chat_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
                 temperature=temperature,
@@ -1011,7 +1013,7 @@ class OpenAIProvider(LLMProvider):
             import openai
 
             response = await self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=self.chat_model,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
