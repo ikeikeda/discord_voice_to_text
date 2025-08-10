@@ -9,6 +9,7 @@ from pydub import AudioSegment
 import io
 import tempfile
 from dataclasses import dataclass
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -113,14 +114,18 @@ class SpeakerAnalyzer:
                 if not user:
                     continue
                 
+                # ファイル名に使用する安全な表示名を作成
+                safe_name = re.sub(r"[^0-9A-Za-z._-]", "_", str(user.display_name))
+
                 # 音声データをファイルに保存
                 temp_file = tempfile.NamedTemporaryFile(
-                    suffix=f"_{user.display_name}_{timestamp}.wav", 
+                    suffix=f"_{safe_name}_{timestamp}.wav",
                     delete=False
                 )
-                
-                # AudioSegmentを使用して音声データを処理
-                audio = AudioSegment.from_file(io.BytesIO(audio_data.file.read()), format="wav")
+
+                # AudioSegmentを使用して音声データを処理（バッファを安全に取得）
+                raw_audio: bytes = audio_data.file.getvalue()
+                audio = AudioSegment.from_file(io.BytesIO(raw_audio), format="wav")
                 
                 # 無音部分が多い場合はスキップ
                 if len(audio) < self.min_speech_duration * 1000:  # ms変換
@@ -129,6 +134,7 @@ class SpeakerAnalyzer:
                     continue
                 
                 audio.export(temp_file.name, format="wav")
+                temp_file.close()
                 speaker_files[user_id] = temp_file.name
                 
                 logger.debug(f"個別音声ファイル作成: {user.display_name} -> {temp_file.name}")
@@ -232,30 +238,38 @@ class SpeakerAnalyzer:
         
         all_activities.sort(key=lambda x: x[0])  # 開始時間でソート
         
-        # 文字起こし結果を区間数で分割（簡易版）
-        sentences = [s.strip() for s in transcription.split('。') if s.strip()]
+        # 文字起こし結果を文単位に分割（簡易・日本語優先だが句読点の揺れに多少対応）
+        # 区切り: 。 ． ！ ？ ! ? と改行
+        raw_sentences = re.split(r"[。．！？!?]+|\n+", transcription)
+        sentences = [s.strip() for s in raw_sentences if s and s.strip()]
         if not sentences:
             return segments
         
-        # 各発言区間にテキストを割り当て
+        # 各発言区間にテキストを割り当て（全文章を確実に配分）
         segment_count = len(all_activities)
-        text_per_segment = max(1, len(sentences) // max(1, segment_count))
-        
+        base = len(sentences) // segment_count if segment_count > 0 else len(sentences)
+        remainder = len(sentences) % segment_count if segment_count > 0 else 0
+
+        cursor = 0
         for i, (start, end, user_id, user_name) in enumerate(all_activities):
-            # このセグメントに対応するテキストを取得
-            start_idx = i * text_per_segment
-            end_idx = min((i + 1) * text_per_segment, len(sentences))
-            
-            if start_idx < len(sentences):
-                segment_text = '。'.join(sentences[start_idx:end_idx])
-                if segment_text:
-                    segments.append(SpeakerSegment(
-                        user_id=user_id,
-                        user_name=user_name,
-                        start_time=start,
-                        end_time=end,
-                        text=segment_text + '。' if not segment_text.endswith('。') else segment_text
-                    ))
+            take = base + (1 if i < remainder else 0)
+            if take <= 0:
+                continue
+            end_cursor = min(cursor + take, len(sentences))
+            chosen = sentences[cursor:end_cursor]
+            cursor = end_cursor
+
+            if chosen:
+                segment_text = '。'.join(chosen)
+                if segment_text and not segment_text.endswith('。'):
+                    segment_text += '。'
+                segments.append(SpeakerSegment(
+                    user_id=user_id,
+                    user_name=user_name,
+                    start_time=start,
+                    end_time=end,
+                    text=segment_text
+                ))
         
         return segments
 
@@ -268,8 +282,9 @@ class SpeakerAnalyzer:
         if not participants or not transcription.strip():
             return []
         
-        # 最初の参加者を話者として設定
-        first_participant = participants[0]
+        # 最初の「人間」参加者を優先（botを除外）。見つからなければ先頭要素を使用
+        human_participants = [p for p in participants if not getattr(p, 'bot', False)]
+        first_participant = human_participants[0] if human_participants else participants[0]
         return [SpeakerSegment(
             user_id=first_participant.id,
             user_name=first_participant.display_name,
