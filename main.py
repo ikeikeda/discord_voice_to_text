@@ -155,8 +155,8 @@ async def start_recording(ctx):
         if ctx.voice_client:
             try:
                 await ctx.voice_client.disconnect()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"ボイス接続切断エラー: {e}")
 
 
 @bot.command(name="stop")
@@ -253,8 +253,8 @@ async def stop_recording(ctx):
         if ctx.voice_client:
             try:
                 await ctx.voice_client.disconnect()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"ボイス接続切断エラー: {e}")
 
 
 @bot.command(name="analysis")
@@ -403,8 +403,8 @@ async def stop_recording_with_analysis(ctx):
         if ctx.voice_client:
             try:
                 await ctx.voice_client.disconnect()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"ボイス接続切断エラー: {e}")
 
 
 @bot.command(name="both")
@@ -511,8 +511,8 @@ async def stop_recording_both(ctx):
         if ctx.voice_client:
             try:
                 await ctx.voice_client.disconnect()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"ボイス接続切断エラー: {e}")
 
 
 @bot.command(name="bothelp")
